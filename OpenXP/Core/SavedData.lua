@@ -15,6 +15,8 @@ local ACCOUNT_DEFAULTS = {
         cardShown = true,
         cardCollapsed = false,
         cardScale = 1,
+        cardAnimations = true,     -- a short fade and slide when the step changes
+        -- cardWidth, cardHeight: the size you dragged the card to (nil: default)
         fontSize = 12,
         font = "default",
         fontOutline = "",

@@ -116,13 +116,21 @@ function Game:InstallGlobals()
         GetText = function(self) return self.text end,
         SetFormattedText = function(self, f, ...) self.text = f:format(...) end,
         SetSize = function(self, w, h) self.w, self.h = w, h end,
-        SetWidth = function(self, w) self.w = w end,
+        SetWidth = function(self, w) self.w, self.wSet = w, true end,
         SetHeight = function(self, h) self.h = h end,
         GetWidth = function(self) return self.w end,
         GetHeight = function(self) return self.h end,
         GetSize = function(self) return self.w, self.h end,
         GetStringWidth = function(self) return #(self.text or "") * 6 end,
-        GetStringHeight = function() return 14 end,
+        -- a font string given a width wraps: 6 px a letter, 14 px a line
+        GetStringHeight = function(self)
+            if self.kind ~= "FontString" or not self.wSet or self.wrap == false or (self.w or 0) <= 0 then return 14 end
+            local plain = tostring(self.text or ""):gsub("|c%x%x%x%x%x%x%x%x", ""):gsub("|r", "")
+            return 14 * math.max(1, math.ceil(#plain * 6 / self.w))
+        end,
+        SetWordWrap = function(self, v) self.wrap = v and true or false end,
+        SetVerticalScroll = function(self, v) self.scroll = v end,
+        GetVerticalScroll = function(self) return self.scroll or 0 end,
         SetPoint = function(self, ...) self.points[#self.points + 1] = { ... } end,
         ClearAllPoints = function(self) self.points = {} end,
         GetPoint = function(self) local p = self.points[1] if p then return p[1], p[2], p[3], p[4], p[5] end end,

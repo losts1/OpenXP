@@ -79,9 +79,40 @@ local function ActiveSteps()
     return out
 end
 
+-- Walking a quest chain ("Do the chain", "Finish it", "Get the quest"):
+-- the card shows the walk's quest, so the buttons follow that quest, not
+-- the guide step underneath (GitHub #14: targets stuck during a chain).
+local function WalkQuest()
+    local card = OXP.Card
+    if not (card and card.detour and card.DetourQuest) then return nil end
+    return card.DetourQuest()
+end
+
+-- who to talk to or what to kill for the walk's quest
+local function WalkTarget(id)
+    local Quests, QuestDB = OXP.Quests, OXP.QuestDB
+    local info = QuestDB.Info(id) or {}
+    if not Quests.IsOnQuest(id) then
+        -- picked up from a person (an item or object start has no one to target)
+        return info.s and info.s[2] ~= 0 and info.s[1] or nil
+    end
+    for i = 1, 8 do
+        local o = Quests.GetObjective(id, i)
+        if not o then break end
+        if not o.done then
+            local list = QuestDB.ObjectiveSources(id, i)
+            for _, src in ipairs(list or {}) do
+                if src.kind == "NPC" and src.name then return src.name end
+            end
+            return nil
+        end
+    end
+    return info.f and info.f[1] or nil
+end
+
 --- The item to put on the item button: id or nil.
 function Buttons.WantedItem()
-    for _, step in ipairs(ActiveSteps()) do
+    for _, step in ipairs(WalkQuest() and {} or ActiveSteps()) do
         for _, g in ipairs(step.goals) do
             if g[1] == "item" and g.item and (GetItemCount(g.item) or 0) > 0 then return g.item end
         end
@@ -89,9 +120,14 @@ function Buttons.WantedItem()
     -- a quest in the step that hands you an item to use
     if GetQuestLogSpecialItemInfo and GetNumQuestLogEntries then
         local quests = {}
-        for _, step in ipairs(ActiveSteps()) do
-            for _, g in ipairs(step.goals) do
-                if g.quest and OXP.Goals.State(g, step.marks) == "todo" then quests[g.quest] = true end
+        local walk = WalkQuest()
+        if walk then
+            quests[walk] = true
+        else
+            for _, step in ipairs(ActiveSteps()) do
+                for _, g in ipairs(step.goals) do
+                    if g.quest and OXP.Goals.State(g, step.marks) == "todo" then quests[g.quest] = true end
+                end
             end
         end
         for i = 1, GetNumQuestLogEntries() do
@@ -108,6 +144,8 @@ end
 --- The NPC or mob to put on the target button: name or nil. A step's
 --- mobs while it still has things to kill, otherwise who to talk to.
 function Buttons.WantedTarget()
+    local walk = WalkQuest()
+    if walk then return WalkTarget(walk) end
     for _, step in ipairs(ActiveSteps()) do
         local killing, mob, talk = false, nil, nil
         for _, g in ipairs(step.goals) do
@@ -206,6 +244,7 @@ item:SetScript("OnDragStop", function(self)
 end)
 
 local function Soon() OXP.Soon("ACTION_BUTTONS", Buttons.Refresh) end
+Buttons.Soon = Soon
 for _, m in ipairs({ "GUIDE_LOADED", "STEP_CHANGED", "STEPS_UPDATED", "SETTINGS_CHANGED", "BAGS_CHANGED", "QUESTS_CHANGED" }) do
     OXP.Listen(m, Soon)
 end

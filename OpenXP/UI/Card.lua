@@ -17,15 +17,24 @@ local C, TEX, WHITE = Style.C, Style.TEX, Style.WHITE
 local SetFont, Tint = Style.SetFont, Style.Tint
 local fmt = string.format
 
-local WIDTH = 330
-local MIN_W, MIN_H, MAX_W, MAX_H = 200, 120, 640, 900
+-- The card keeps the size you give it (saved in the settings) and never
+-- grows or shrinks with the step: a long step scrolls inside it instead,
+-- so the buttons stay under your mouse while you click through steps.
+local WIDTH, HEIGHT = 330, 300
+local MIN_W, MIN_H, MAX_W, MAX_H = 200, 150, 640, 900
+local TOP_H = 1 + 28 + 2      -- border, header, progress line
+local BAR_H = 38 + 1          -- button bar, border
+local COLLAPSED_H = 42
 local MAX_UPNEXT = 12
 local PAD = 12
 local MAX_BLOCKS = 4
 local MAX_LINES = 8
+local FADE = 0.2              -- seconds for the new-step fade and slide
 
 local function Settings() return OXP.settings end
+local function Clamp(v, lo, hi) return math.max(lo, math.min(hi, v)) end
 local function Width() return Card.width or WIDTH end
+local function Height() return Card.height or HEIGHT end
 
 ---------------------------------------------------------------------------
 -- Frame
@@ -33,7 +42,7 @@ local function Width() return Card.width or WIDTH end
 
 local f = CreateFrame("Frame", "OpenXPCard", UIParent, "BackdropTemplate")
 Card.frame = f
-f:SetSize(WIDTH, 120)
+f:SetSize(WIDTH, HEIGHT)
 f:SetPoint("RIGHT", UIParent, "RIGHT", -40, 120)
 f:SetFrameStrata("MEDIUM")
 f:SetClampedToScreen(true)
@@ -76,30 +85,49 @@ grip:SetFrameLevel(f:GetFrameLevel() + 10)
 grip:SetNormalTexture("Interface\\ChatFrame\\UI-ChatIM-SizeGrabber-Up")
 grip:SetHighlightTexture("Interface\\ChatFrame\\UI-ChatIM-SizeGrabber-Highlight")
 grip:SetPushedTexture("Interface\\ChatFrame\\UI-ChatIM-SizeGrabber-Down")
-grip:SetScript("OnMouseDown", function(_, button)
-    if button ~= "LeftButton" or Settings().lockFrames then return end
+-- Take the frame's size while you drag the grip (live: the text wraps to
+-- it as you go). Collapsed, only the width is yours to change.
+function Card.TakeSize()
+    local w = Clamp(f:GetWidth() or WIDTH, MIN_W, MAX_W)
+    local changed = math.abs(w - Width()) >= 0.5
+    Card.width = w
+    if not Settings().cardCollapsed then
+        local h = Clamp(f:GetHeight() or HEIGHT, MIN_H, MAX_H)
+        changed = changed or math.abs(h - Height()) >= 0.5
+        Card.height = h
+    end
+    return changed
+end
+
+function Card.StartSizing()
+    if Settings().lockFrames then return end
     Card.sizing = true
     f:StartSizing("BOTTOMRIGHT")
-end)
-grip:SetScript("OnMouseUp", function()
+end
+
+function Card.StopSizing()
     if not Card.sizing then return end
     f:StopMovingOrSizing()
     Card.sizing = false
+    Card.TakeSize()
     local s = Settings()
-    Card.width = math.floor(math.max(MIN_W, math.min(MAX_W, f:GetWidth() or WIDTH)) + 0.5)
+    Card.width = math.floor(Width() + 0.5)
     s.cardWidth = Card.width
     if not s.cardCollapsed then
-        Card.height = math.floor(math.max(MIN_H, math.min(MAX_H, f:GetHeight() or MIN_H)) + 0.5)
+        Card.height = math.floor(Height() + 0.5)
         s.cardHeight = Card.height
     end
     SavePosition()
     Card.Refresh(true)
+end
+
+grip:SetScript("OnMouseDown", function(_, button)
+    if button == "LeftButton" then Card.StartSizing() end
 end)
+grip:SetScript("OnMouseUp", function() Card.StopSizing() end)
+grip:SetScript("OnHide", function() Card.StopSizing() end)
 grip:SetScript("OnUpdate", function()
-    if Card.sizing then
-        Card.width = math.max(MIN_W, math.min(MAX_W, f:GetWidth() or WIDTH))
-        Card.Refresh(true)
-    end
+    if Card.sizing and Card.TakeSize() then Card.Refresh(true) end
 end)
 grip:SetScript("OnEnter", function(self) Style.Tooltip(self, L("Drag to resize")) end)
 grip:SetScript("OnLeave", function() GameTooltip:Hide() end)
@@ -279,6 +307,7 @@ function Card.StartDetour(target, ids, mode)
     Card.detour = { target = target, ids = ids, mode = mode, guide = g and g.key }
     OXP.char.detour = Card.detour
     Card.Refresh(true)
+    if OXP.ActionButtons then OXP.ActionButtons.Soon() end -- the target button follows the walk
 end
 
 function Card.StopDetour()
@@ -286,6 +315,7 @@ function Card.StopDetour()
     OXP.char.detour = nil
     OXP.Target.SetOverride(nil)
     Card.Refresh(true)
+    if OXP.ActionButtons then OXP.ActionButtons.Soon() end
 end
 
 local function DetourDone(d)
@@ -311,16 +341,19 @@ end
 
 --- The quest of the walk you're on, as a step the card can show, its place
 --- in the walk, and the arrow's spot for it.
-function Card.DetourStep()
+--- The quest of the walk you're on and its place in the walk, or nil.
+function Card.DetourQuest()
     local d = Card.detour
     if not d then return nil end
-    local index, id
     for i, q in ipairs(d.ids) do
         if not TurnedIn(q) and not (q == d.target and Quests.IsOnQuest(q) and d.mode ~= "complete") then
-            index, id = i, q
-            break
+            return q, i
         end
     end
+end
+
+function Card.DetourStep()
+    local id, index = Card.DetourQuest()
     if not id then return nil end
     local info = QuestDB.Info(id) or {}
     local name = QuestDB.QuestName(id)
@@ -433,10 +466,54 @@ end
 -- Step blocks
 ---------------------------------------------------------------------------
 
-local body = CreateFrame("Frame", nil, f)
-body:SetPoint("TOPLEFT", progressBg, "BOTTOMLEFT", 0, 0)
-body:SetPoint("TOPRIGHT", progressBg, "BOTTOMRIGHT", 0, 0)
+-- The steps sit in a scroll frame between the header and "Up next": what
+-- doesn't fit is cut off at its edge (never drawn over the buttons), and
+-- "More" lets it take the room of "Up next" and scroll with the wheel.
+local view = CreateFrame("ScrollFrame", nil, f)
+Card.view = view
+view:SetPoint("TOPLEFT", progressBg, "BOTTOMLEFT", 0, 0)
+view:SetPoint("TOPRIGHT", progressBg, "BOTTOMRIGHT", 0, 0)
+view:SetHeight(10)
+if view.SetClipsChildren then view:SetClipsChildren(true) end
+local content = CreateFrame("Frame", nil, view)
+Card.content = content
+content:SetSize(WIDTH - 2, 10)
+view:SetScrollChild(content)
+
+local body = CreateFrame("Frame", nil, content)
+body:SetPoint("TOPLEFT", content, "TOPLEFT", 0, 0)
+body:SetPoint("TOPRIGHT", content, "TOPRIGHT", 0, 0)
 body:SetHeight(10)
+
+-- a new step fades in and slides up a little (Settings: "Animate step changes")
+local anim = view:CreateAnimationGroup()
+Card.anim = anim
+local function Anim(kind, order, duration)
+    local a = anim:CreateAnimation(kind)
+    a:SetOrder(order)
+    a:SetDuration(duration)
+    return a
+end
+do
+    -- order 1 puts it 8 px down and hides it at once, order 2 brings it home
+    local hide = Anim("Alpha", 1, 0.001)
+    hide:SetFromAlpha(0)
+    hide:SetToAlpha(0)
+    Anim("Translation", 1, 0.001):SetOffset(0, -8)
+    local show = Anim("Alpha", 2, FADE)
+    show:SetFromAlpha(0)
+    show:SetToAlpha(1)
+    local slide = Anim("Translation", 2, FADE)
+    slide:SetOffset(0, 8)
+    if slide.SetSmoothing then slide:SetSmoothing("OUT") end
+end
+
+function Card.PlayStepAnimation()
+    if Settings().cardAnimations == false then return false end
+    if anim:IsPlaying() then anim:Stop() end
+    anim:Play()
+    return true
+end
 
 local blocks = {}
 Card.blocks = blocks
@@ -450,6 +527,7 @@ local function NewLine(block)
     line.text:SetPoint("TOPLEFT", line.mark, "TOPRIGHT", 7, 1)
     line.text:SetJustifyH("LEFT")
     line.text:SetJustifyV("TOP")
+    line.text:SetWordWrap(true) -- wraps to the card's width, never cut off at the side
     line.barBg = line:CreateTexture(nil, "ARTWORK")
     line.barBg:SetHeight(5)
     line.barBg:SetColorTexture(1, 1, 1, 0.1)
@@ -480,6 +558,7 @@ local function GetBlock(i)
     b.title:SetPoint("TOPLEFT", b.badge, "TOPRIGHT", 12, -1)
     b.title:SetJustifyH("LEFT")
     b.title:SetJustifyV("TOP")
+    b.title:SetWordWrap(true)
     b.title:SetTextColor(unpack(C.text))
     b.lines = {}
     blocks[i] = b
@@ -636,7 +715,7 @@ function Card.ReportError(err)
     Card.lastError = err
     if reported[err] then return end
     reported[err] = true
-    OXP.Print("|cFFFF7043card error|r (please send this to the OpenXP author): " .. err)
+    print("|cFFFF4040OpenXP card error:|r " .. err)
 end
 
 local function LayoutBlock(b, step, pos, first)
@@ -772,9 +851,9 @@ end
 ---------------------------------------------------------------------------
 
 local HIST_ROWS, HIST_ROW_H = 6, 20
-local hist = CreateFrame("Frame", nil, f)
-hist:SetPoint("TOPLEFT", progressBg, "BOTTOMLEFT", 0, 0)
-hist:SetPoint("TOPRIGHT", progressBg, "BOTTOMRIGHT", 0, 0)
+local hist = CreateFrame("Frame", nil, content)
+hist:SetPoint("TOPLEFT", content, "TOPLEFT", 0, 0)
+hist:SetPoint("TOPRIGHT", content, "TOPRIGHT", 0, 0)
 hist:SetHeight(1)
 hist.bg = hist:CreateTexture(nil, "BACKGROUND")
 hist.bg:SetAllPoints()
@@ -880,8 +959,19 @@ function Card.LayoutHistory(current)
     return y
 end
 
+--- With "More" open, the wheel scrolls the step's text; true if it did.
+function Card.ScrollText(delta)
+    if not (Card.expanded and (Card.maxScroll or 0) > 0) then return false end
+    local by = (Style.FontSize(0) + 6) * 2
+    Card.scroll = Clamp((Card.scroll or 0) - delta * by, 0, Card.maxScroll)
+    view:SetVerticalScroll(Card.scroll)
+    return true
+end
+
 f:EnableMouseWheel(true)
-f:SetScript("OnMouseWheel", function(_, delta) Card.ScrollHistory(delta) end)
+f:SetScript("OnMouseWheel", function(_, delta)
+    if not Card.ScrollText(delta) then Card.ScrollHistory(delta) end
+end)
 
 ---------------------------------------------------------------------------
 -- Up next, the button bar, the XP strip
@@ -1014,6 +1104,25 @@ bar.settings:SetPoint("RIGHT", bar.collapse, "LEFT", -2, 0)
 bar.menu = Btn(bar, "menu", L("Pick a guide, skipped quest chains, feedback"), function() OXP.GuidePicker.Toggle(bar.menu) end)
 bar.menu:SetPoint("RIGHT", bar.settings, "LEFT", -2, 0)
 
+-- "More" at the foot of the steps when they don't fit: the steps take the
+-- room of "Up next" and scroll with the wheel. The card itself stays put.
+local more = Style.TextButton(f, L("More"), L("Show all of this step. Mouse wheel scrolls; the card keeps its size."),
+    function() Card.SetExpanded(not Card.expanded) end)
+Card.more = more
+more:SetHeight(18)
+more:SetFrameLevel(f:GetFrameLevel() + 8)
+more.back = more:CreateTexture(nil, "BACKGROUND", nil, -1) -- solid, so cut-off text doesn't show through
+more.back:SetAllPoints()
+more.back:SetColorTexture(C.bg[1], C.bg[2], C.bg[3], 1)
+more:SetPoint("BOTTOMRIGHT", view, "BOTTOMRIGHT", -PAD, 3)
+more:Hide()
+
+function Card.SetExpanded(value)
+    Card.expanded = value and true or false
+    Card.scroll = 0
+    Card.Refresh(true)
+end
+
 -- collapsed: one line with the badge, the step and an expand button
 local mini = CreateFrame("Frame", nil, f)
 mini:SetPoint("TOPLEFT", 1, -1)
@@ -1079,7 +1188,7 @@ function Card.Signature()
         Card.width or 0, Card.height or 0, s.cardScale or 1, s.fontSize or 0, s.font or "",
         s.cardCollapsed and 1 or 0, s.lockFrames and 1 or 0, Card.detour and 1 or 0,
         Card.sizing and 1 or 0, Card.histOffset or 0, Engine.IsHeld() and 1 or 0,
-        Card.here and Card.here.pos or 0,
+        Card.here and Card.here.pos or 0, Card.expanded and 1 or 0,
     }
     local travel = OXP.Travel.Lines()
     parts[#parts + 1] = travel and table.concat(travel, "|") or ""
@@ -1095,6 +1204,191 @@ function Card.Signature()
         end
     end
     return table.concat(parts, "\031")
+end
+
+-- Run one part of the layout; an error in it is reported once and the rest
+-- of the card is still laid out and sized.
+local function Done(ok, ...)
+    if ok then return true, ... end
+    Card.ReportError((...))
+    return false
+end
+local function Try(fn, ...) return Done(pcall(fn, ...)) end
+
+-- Which steps the card shows: { { step, pos }, ... }, the chain walk's step
+-- and its place in the walk, and the last guide position on screen.
+local function PickSteps(current)
+    local all = Engine.GetSteps()
+    -- the step to do first, then those that stay open in the background
+    local now_, side = {}, {}
+    local lastPos = current
+    for _, pos in ipairs(Engine.GetActive()) do
+        local step = all[pos]
+        if Card.StepRole(step, pos) == "now" then now_[#now_ + 1] = { step, pos } else side[#side + 1] = { step, pos } end
+        if pos > lastPos then lastPos = pos end
+    end
+    local shown = now_
+    for _, e in ipairs(side) do shown[#shown + 1] = e end
+    -- a later step's turn-ins for the person you're standing by go on top
+    local hereStep, herePos = Card.HereStep()
+    if hereStep then table.insert(shown, 1, { hereStep, herePos }) end
+    while #shown > MAX_BLOCKS do table.remove(shown) end
+
+    -- walking through a quest chain: the card shows that instead
+    local detourStep, detourIndex
+    if Card.detour then
+        local target
+        detourStep, detourIndex, target = Card.DetourStep()
+        if detourStep then
+            shown = { { detourStep, nil } }
+            -- a new table every refresh: only tell the arrow when the spot moves
+            local want = target or NO_SPOT
+            if not SameSpot(OXP.Target.override, want) then OXP.Target.SetOverride(want) end
+        elseif OXP.Target.override then
+            OXP.Target.SetOverride(nil) -- nothing left to show: back to the guide's arrow
+        end
+    end
+    return shown, detourStep, detourIndex, lastPos
+end
+
+--- What the card has on top, as a key: a new key is a new step (the
+--- fade plays, "More" closes and the text scrolls back to the top).
+function Card.StepKey(shown, detourStep, detourIndex)
+    if detourStep then return "chain:" .. tostring(Card.detour.target) .. ":" .. tostring(detourIndex) end
+    local first = shown[1]
+    if not first then return "none" end
+    return tostring(Engine.GetGuide()) .. ":" .. tostring(first[2]) .. (first[1].here and ":here" or "")
+end
+
+local function LayoutCollapsed(shown, current, total)
+    SetFont(mini.text, 2)
+    SetFont(mini.count, 0)
+    local first = shown[1]
+    if first then
+        mini.badge:SetKind(first[1].detour and "accept" or Card.StepKind(first[1]))
+        mini.text:SetText(Text.Strip(first[1].detour and first[1].title or (Card.StepContent(first[1]))))
+    else
+        mini.badge:SetKind("travel")
+        mini.text:SetText(L("Guide finished"))
+    end
+    mini.count:SetText(fmt("%d/%d", current, total))
+end
+
+local function LayoutBar(detourStep, current)
+    local wide = Width() >= 360
+    local slim = Width() < 300
+    local bw = Width() < 250 and 26 or slim and 30 or 40
+    for _, btn in ipairs({ bar.prev, bar.next, bar.menu, bar.settings, bar.collapse }) do btn:SetWidth(bw) end
+    bar.collapse:ClearAllPoints()
+    bar.collapse:SetPoint("RIGHT", slim and -18 or -20, 0)
+    for _, btn in ipairs({ bar.find, bar.stop, bar.resume }) do
+        btn:SetWidth(wide and 116 or bw)
+        btn.label:SetShown(wide)
+        btn.icon:ClearAllPoints()
+        if wide then btn.icon:SetPoint("LEFT", 10, 0) else btn.icon:SetPoint("CENTER") end
+    end
+    local furthest = Engine.GetFurthest()
+    local looking = not detourStep and Engine.IsHeld() and furthest and furthest > current
+    if looking then bar.resume.label:SetText(fmt(L("Back to %d"), furthest)) end
+    bar.find:SetShown(not detourStep and not looking)
+    bar.stop:SetShown(detourStep ~= nil)
+    bar.resume:SetShown(looking and true or false)
+end
+
+local function LayoutHeader(guide, current, total, detourStep, detourIndex)
+    local zone, range = SplitGuideName(guide)
+    SetFont(header.zone, -1)
+    SetFont(header.range, -1)
+    SetFont(header.step, -1)
+    header.zone:SetWidth(0)
+    header.zone:SetText(zone:upper())
+    local zoneMax = math.max(50, Width() - 150)
+    if header.zone:GetStringWidth() > zoneMax then header.zone:SetWidth(zoneMax) end
+    header.range:SetText(range)
+    header.range:SetShown(Width() >= 300)
+    header.step:SetText(fmt(L("Step %d / %d"), current, total))
+    local frac = total > 0 and current / total or 0
+    if detourStep then
+        header.zone:SetText(L("QUEST CHAIN"))
+        header.range:SetText("")
+        header.step:SetText(fmt("%d / %d", detourIndex, #Card.detour.ids))
+        frac = detourIndex / math.max(#Card.detour.ids, 1)
+    end
+    progress:SetWidth(math.max(1, (Width() - 2) * frac))
+end
+
+-- The blocks, one per step, top to bottom; returns their height.
+local function LayoutBlocks(shown)
+    local y = 0
+    for i = 1, MAX_BLOCKS do
+        local b, e = blocks[i], shown[i]
+        if e then
+            b = GetBlock(i)
+            b:ClearAllPoints()
+            b:SetPoint("TOPLEFT", body, "TOPLEFT", 0, -y)
+            b:SetPoint("TOPRIGHT", body, "TOPRIGHT", 0, -y)
+            local ok, h = Try(LayoutBlock, b, e[1], e[2], i == 1)
+            if ok then
+                y = y + h
+                b:Show()
+            else
+                b:Hide()
+            end
+        elseif b then
+            b:Hide()
+        end
+    end
+    if #shown == 0 then y = 8 end
+    return y
+end
+
+local function UpNextTexts(count, detourStep, detourIndex, lastPos)
+    if count <= 0 then return {} end
+    if not detourStep then return NextStepTexts(lastPos, count) end
+    local texts = {}
+    local ids = Card.detour.ids
+    for i = detourIndex + 1, #ids do
+        if #texts >= count then break end
+        local info = QuestDB.Info(ids[i])
+        texts[#texts + 1] = QuestDB.QuestName(ids[i]) .. (info and info.l and info.l > 0 and fmt(" (lvl %d)", info.l) or "")
+    end
+    if #texts < count then texts[#texts + 1] = fmt(L("Back to the guide: %s"), QuestDB.QuestName(Card.detour.target)) end
+    return texts
+end
+
+-- "Up next" sits on the button bar; returns its height (0 when hidden).
+local function LayoutUpNext(texts)
+    upNext:ClearAllPoints()
+    upNext:SetPoint("BOTTOMLEFT", bar, "TOPLEFT", 0, 0)
+    upNext:SetPoint("BOTTOMRIGHT", bar, "TOPRIGHT", 0, 0)
+    if #texts == 0 then
+        upNext:Hide()
+        upNext:SetHeight(1)
+        return 0
+    end
+    local lineH = Style.FontSize(0) + 6
+    SetFont(upNext.label, -2, "")
+    upNext.label:SetText(L("UP NEXT"))
+    local textW = Width() - PAD * 2 - upNext.label:GetStringWidth() - 10
+    for i = 1, math.max(#texts, #upNext.lines) do
+        local line = texts[i] and UpNextLine(i) or upNext.lines[i]
+        if texts[i] then
+            SetFont(line, 0)
+            if i > 1 then
+                line:ClearAllPoints()
+                line:SetPoint("TOPLEFT", upNext.lines[i - 1], "BOTTOMLEFT", 0, -6)
+            end
+            line:SetWidth(textW)
+            line:SetText(texts[i])
+            line:Show()
+        else
+            line:Hide()
+        end
+    end
+    local h = 34 + (#texts - 1) * lineH
+    upNext:SetHeight(h)
+    upNext:Show()
+    return h
 end
 
 function Card.Refresh(force)
@@ -1125,183 +1419,89 @@ function Card.Refresh(force)
         end)
     end
     Card.lastSig, Card.lastFull = sig, now
-    if Card.FillStepList then pcall(Card.FillStepList) end
-    pcall(UpdateXP)
+    if Card.FillStepList then Try(Card.FillStepList) end
+    Try(UpdateXP)
 
     local s = Settings()
     local scale = s.cardScale or 1
     if f:GetScale() ~= scale then f:SetScale(scale) end
-    if not Card.sizing and f:GetWidth() ~= Width() then f:SetWidth(Width()) end
-    grip:SetShown(not s.lockFrames)
+    -- the size is yours: set it back to what you chose (while you drag the
+    -- grip the game sizes the frame and the layout follows)
+    local collapsed = s.cardCollapsed
+    grip:SetShown(not s.lockFrames and not collapsed)
+    if not Card.sizing then
+        f:SetSize(Width(), collapsed and COLLAPSED_H or Height())
+    end
 
     local guide = Engine.GetGuide()
-    local all = Engine.GetSteps()
-    local total = #all
+    local total = #Engine.GetSteps()
     local current = math.min(Engine.GetPosition() or 1, math.max(total, 1))
 
-    -- the step to do first, then those that stay open in the background
-    local now_, side = {}, {}
-    local lastPos = current
-    for _, pos in ipairs(Engine.GetActive()) do
-        local step = all[pos]
-        if Card.StepRole(step, pos) == "now" then now_[#now_ + 1] = { step, pos } else side[#side + 1] = { step, pos } end
-        if pos > lastPos then lastPos = pos end
-    end
-    local shown = now_
-    for _, e in ipairs(side) do shown[#shown + 1] = e end
-    -- a later step's turn-ins for the person you're standing by go on top
-    local hereStep, herePos = Card.HereStep()
-    if hereStep then table.insert(shown, 1, { hereStep, herePos }) end
-    while #shown > MAX_BLOCKS do table.remove(shown) end
+    local ok, shown, detourStep, detourIndex, lastPos = Try(PickSteps, current)
+    if not ok then shown, detourStep, detourIndex, lastPos = {}, nil, nil, current end
 
-    -- walking through a quest chain: the card shows that instead
-    local detourStep, detourIndex
-    if Card.detour then
-        local target
-        detourStep, detourIndex, target = Card.DetourStep()
-        if detourStep then
-            shown = { { detourStep, nil } }
-            -- a new table every refresh: only tell the arrow when the spot moves
-            local want = target or NO_SPOT
-            if not SameSpot(OXP.Target.override, want) then OXP.Target.SetOverride(want) end
-        elseif OXP.Target.override then
-            OXP.Target.SetOverride(nil) -- nothing left to show: back to the guide's arrow
-        end
-    end
-
-    if s.cardCollapsed then
-        header:Hide(); progressBg:Hide(); progress:Hide(); body:Hide(); upNext:Hide(); bar:Hide(); hist:Hide()
+    if collapsed then
+        header:Hide(); progressBg:Hide(); progress:Hide(); view:Hide(); upNext:Hide(); bar:Hide(); more:Hide()
         mini:Show()
-        SetFont(mini.text, 2)
-        SetFont(mini.count, 0)
-        local first = shown[1]
-        if first then
-            mini.badge:SetKind(first[1].detour and "accept" or Card.StepKind(first[1]))
-            mini.text:SetText(Text.Strip(first[1].detour and first[1].title or (Card.StepContent(first[1]))))
-        else
-            mini.badge:SetKind("travel")
-            mini.text:SetText(L("Guide finished"))
-        end
-        mini.count:SetText(fmt("%d/%d", current, total))
-        if not Card.sizing then f:SetHeight(42) end
+        Try(LayoutCollapsed, shown, current, total)
         return
     end
 
+    -- a new step on top: fade it in, close "More", back to the top
+    local key = Card.StepKey(shown, detourStep, detourIndex)
+    if key ~= Card.stepKey then
+        if Card.stepKey ~= nil and not Card.sizing then Card.PlayStepAnimation() end
+        Card.stepKey = key
+        Card.expanded, Card.scroll = false, 0
+    end
+
     mini:Hide()
-    local wide = Width() >= 360
-    local slim = Width() < 300
-    local bw = Width() < 250 and 26 or slim and 30 or 40
-    for _, btn in ipairs({ bar.prev, bar.next, bar.menu, bar.settings, bar.collapse }) do btn:SetWidth(bw) end
-    bar.collapse:ClearAllPoints()
-    bar.collapse:SetPoint("RIGHT", slim and -18 or -20, 0)
-    for _, btn in ipairs({ bar.find, bar.stop, bar.resume }) do
-        btn:SetWidth(wide and 116 or bw)
-        btn.label:SetShown(wide)
-        btn.icon:ClearAllPoints()
-        if wide then btn.icon:SetPoint("LEFT", 10, 0) else btn.icon:SetPoint("CENTER") end
-    end
-    local furthest = Engine.GetFurthest()
-    local looking = not detourStep and Engine.IsHeld() and furthest and furthest > current
-    if looking then bar.resume.label:SetText(fmt(L("Back to %d"), furthest)) end
-    bar.find:SetShown(not detourStep and not looking)
-    bar.stop:SetShown(detourStep ~= nil)
-    bar.resume:SetShown(looking and true or false)
-    header:Show(); progressBg:Show(); progress:Show(); body:Show(); upNext:Show(); bar:Show()
+    header:Show(); progressBg:Show(); progress:Show(); view:Show(); bar:Show()
+    Try(LayoutBar, detourStep, current)
+    Try(LayoutHeader, guide, current, total, detourStep, detourIndex)
 
-    local zone, range = SplitGuideName(guide)
-    SetFont(header.zone, -1)
-    SetFont(header.range, -1)
-    SetFont(header.step, -1)
-    header.zone:SetWidth(0)
-    header.zone:SetText(zone:upper())
-    local zoneMax = math.max(50, Width() - 150)
-    if header.zone:GetStringWidth() > zoneMax then header.zone:SetWidth(zoneMax) end
-    header.range:SetText(range)
-    header.range:SetShown(Width() >= 300)
-    header.step:SetText(fmt(L("Step %d / %d"), current, total))
-    local frac = total > 0 and current / total or 0
-    if detourStep then
-        header.zone:SetText(L("QUEST CHAIN"))
-        header.range:SetText("")
-        header.step:SetText(fmt("%d / %d", detourIndex, #Card.detour.ids))
-        frac = detourIndex / math.max(#Card.detour.ids, 1)
-    end
-    progress:SetWidth(math.max(1, (Width() - 2) * frac))
-
-    local histH = Card.LayoutHistory(current)
+    content:SetWidth(Width() - 2)
+    local okH, histH = Try(Card.LayoutHistory, current)
+    histH = okH and histH or 0
     body:ClearAllPoints()
-    body:SetPoint("TOPLEFT", histH > 0 and hist or progressBg, "BOTTOMLEFT", 0, 0)
-    body:SetPoint("TOPRIGHT", histH > 0 and hist or progressBg, "BOTTOMRIGHT", 0, 0)
-
-    local y = 0
-    for i = 1, MAX_BLOCKS do
-        local b, e = blocks[i], shown[i]
-        if e then
-            b = GetBlock(i)
-            b:ClearAllPoints()
-            b:SetPoint("TOPLEFT", body, "TOPLEFT", 0, -y)
-            b:SetPoint("TOPRIGHT", body, "TOPRIGHT", 0, -y)
-            y = y + LayoutBlock(b, e[1], e[2], i == 1)
-            b:Show()
-        elseif b then
-            b:Hide()
-        end
+    if histH > 0 then
+        body:SetPoint("TOPLEFT", hist, "BOTTOMLEFT", 0, 0)
+        body:SetPoint("TOPRIGHT", hist, "BOTTOMRIGHT", 0, 0)
+    else
+        body:SetPoint("TOPLEFT", content, "TOPLEFT", 0, 0)
+        body:SetPoint("TOPRIGHT", content, "TOPRIGHT", 0, 0)
     end
-    if #shown == 0 then y = 8 end
+    local y = LayoutBlocks(shown)
     body:SetHeight(math.max(y, 1))
+    local contentH = histH + y + 4
+    content:SetHeight(math.max(contentH, 1))
 
-    -- one "up next" line; a taller card shows more of the route
+    -- room between the header and the buttons: the steps first, then as
+    -- many "Up next" lines as fit (at least one, unless "More" is open)
     local lineH = Style.FontSize(0) + 6
-    local baseHeight = 1 + 28 + 2 + histH + y + 4 + 34 + 38 + 1
-    local want = Card.sizing and (f:GetHeight() or 0) or (Card.height or 0)
-    local count = math.min(MAX_UPNEXT, 1 + math.max(0, math.floor((want - baseHeight) / lineH)))
-    local texts
-    if detourStep then
-        texts = {}
-        local ids = Card.detour.ids
-        for i = detourIndex + 1, #ids do
-            if #texts >= count then break end
-            local info = QuestDB.Info(ids[i])
-            texts[#texts + 1] = QuestDB.QuestName(ids[i]) .. (info and info.l and info.l > 0 and fmt(" (lvl %d)", info.l) or "")
-        end
-        if #texts < count then texts[#texts + 1] = fmt(L("Back to the guide: %s"), QuestDB.QuestName(Card.detour.target)) end
-    else
-        texts = NextStepTexts(lastPos, count)
+    local room = (Card.sizing and (f:GetHeight() or Height()) or Height()) - TOP_H - BAR_H
+    local count = 0
+    if not Card.expanded then
+        count = math.min(MAX_UPNEXT, 1 + math.max(0, math.floor((room - contentH - 34) / lineH)))
     end
+    local okT, texts = Try(UpNextTexts, count, detourStep, detourIndex, lastPos)
+    local okU, upH = Try(LayoutUpNext, okT and texts or {})
+    upH = okU and upH or 0
 
-    upNext:ClearAllPoints()
-    upNext:SetPoint("TOPLEFT", body, "BOTTOMLEFT", 0, -4)
-    upNext:SetPoint("TOPRIGHT", body, "BOTTOMRIGHT", 0, -4)
-    local upHeight = 0
-    if #texts > 0 then
-        SetFont(upNext.label, -2, "")
-        upNext.label:SetText(L("UP NEXT"))
-        local textW = Width() - PAD * 2 - upNext.label:GetStringWidth() - 10
-        for i = 1, math.max(#texts, #upNext.lines) do
-            local line = texts[i] and UpNextLine(i) or upNext.lines[i]
-            if texts[i] then
-                SetFont(line, 0)
-                if i > 1 then
-                    line:ClearAllPoints()
-                    line:SetPoint("TOPLEFT", upNext.lines[i - 1], "BOTTOMLEFT", 0, -6)
-                end
-                line:SetWidth(textW)
-                line:SetText(texts[i])
-                line:Show()
-            else
-                line:Hide()
-            end
-        end
-        upHeight = 34 + (#texts - 1) * lineH
-        upNext:Show()
+    local viewH = math.max(1, room - upH)
+    view:SetHeight(viewH)
+    Card.viewHeight, Card.contentHeight = viewH, contentH
+    Card.overflow = contentH > viewH + 0.5
+    Card.maxScroll = math.max(0, contentH - viewH)
+    if not Card.expanded then Card.scroll = 0 end
+    Card.scroll = Clamp(Card.scroll or 0, 0, Card.maxScroll)
+    view:SetVerticalScroll(Card.scroll)
+    if Card.overflow or Card.expanded then
+        more:SetLabel(Card.expanded and L("Less") or L("More"))
+        more:SetWidth(math.max(48, (more.label:GetStringWidth() or 30) + 16))
+        more:Show()
     else
-        upNext:Hide()
-    end
-    upNext:SetHeight(math.max(upHeight, 1))
-
-    if not Card.sizing then
-        local content = 1 + 28 + 2 + histH + y + 4 + upHeight + 38 + 1
-        f:SetHeight(math.max(content, Card.height or 0))
+        more:Hide()
     end
 end
 Card.Refresh = OXP.Perf.Wrap("card redraw", Card.Refresh)
@@ -1613,7 +1813,8 @@ function Card.Enable()
         f:SetPoint(s.cardPos[1], UIParent, s.cardPos[2], s.cardPos[3], s.cardPos[4])
     end
     if OXP.char.detour and OXP.char.detour.ids then Card.detour = OXP.char.detour end
-    Card.width, Card.height = s.cardWidth, s.cardHeight
+    Card.width = s.cardWidth and Clamp(s.cardWidth, MIN_W, MAX_W) or nil
+    Card.height = s.cardHeight and Clamp(s.cardHeight, MIN_H, MAX_H) or nil
     f:SetScale(s.cardScale or 1)
     Card.Refresh(true)
     -- once per character: Questie adds chains and levels
@@ -1632,7 +1833,7 @@ function Card.ResetPosition()
     Card.width, Card.height = nil, nil
     f:ClearAllPoints()
     f:SetPoint("RIGHT", UIParent, "RIGHT", -40, 120)
-    f:SetWidth(WIDTH)
+    f:SetSize(WIDTH, HEIGHT)
     Card.Refresh(true)
 end
 

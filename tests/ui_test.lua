@@ -390,6 +390,147 @@ do
 end
 
 ------------------------------------------------------------------------
+print("-- the card keeps its size from step to step; long text wraps and scrolls inside it")
+do
+    local game, OXP = newGame({ level = 21 })
+    local long = ("Follow the road east past the farm and the old mill, then climb the hill. "):rep(8)
+    local g = addGuide(OXP, {
+        { { "text", text = "Talk to Bob" }, { "accept", quest = 600, text = "Accept Bob's Task" } },
+        { { "text", text = long }, { "accept", quest = 601, text = "Accept the Long Walk" } },
+        { { "text", text = "Short again" }, { "accept", quest = 602, text = "Accept Three" } },
+    })
+    OXP.Engine.Load(g.key)
+    local C, f = OXP.Card, OXP.Card.frame
+    C.Refresh(true)
+    local w0, h0 = f.w, f.h
+    t.eq(h0, 300, "a fresh card has the default height")
+    t.ok(not C.more.shown, "a short step fits: no More")
+    local played = 0
+    C.anim.Play = function() played = played + 1 end
+    C.GoNext()
+    t.eq(f.w, w0, "next step: same width")
+    t.eq(f.h, h0, "next step: same height, so the buttons stay under the mouse")
+    t.eq(played, 1, "the new step fades in")
+    local title = C.blocks[1].title
+    t.eq(title.w, w0 - 12 * 2 - 34 - 12, "the title wraps to the card's width")
+    t.ok(title:GetStringHeight() > 14 * 3, "the long title takes several lines")
+    t.ok(C.overflow and C.more.shown and C.more.label.text == "More", "too long for the card: More shows")
+    t.ok(C.view.h < h0, "the steps area is cut off inside the card (" .. tostring(C.view.h) .. ")")
+    local upH = C.view.h
+    C.more.scripts.OnClick()
+    t.ok(C.expanded and C.more.label.text == "Less", "More opens the text")
+    t.eq(f.h, h0, "and the card still doesn't grow")
+    t.ok(C.view.h > upH, "the steps take the room of Up next (" .. upH .. " -> " .. C.view.h .. ")")
+    t.ok(f.scripts.OnMouseWheel and C.ScrollText(-1) and C.view.scroll > 0, "the wheel scrolls the text")
+    C.ScrollText(-1000)
+    t.eq(C.view.scroll, C.maxScroll, "but not past the end")
+    C.Refresh(true)
+    t.ok(C.expanded and C.view.scroll == C.maxScroll, "a redraw of the same step keeps it open and scrolled")
+
+    -- drag the grip: the text re-wraps live, the card takes the new size
+    C.StartSizing()
+    f.w, f.h = 520, 420
+    C.grip.scripts.OnUpdate()
+    t.eq(C.blocks[1].title.w, 520 - 70, "the text re-wraps while you drag")
+    t.eq(f.w, 520, "the frame keeps the size you're dragging to")
+    C.StopSizing()
+    t.eq(OXP.settings.cardWidth, 520, "width saved")
+    t.eq(OXP.settings.cardHeight, 420, "height saved")
+    t.ok(not C.overflow, "wide enough now: no overflow")
+    -- and back down: smaller than the content works too (#16)
+    C.StartSizing()
+    f.w, f.h = 220, 160
+    C.grip.scripts.OnUpdate()
+    C.StopSizing()
+    t.ok(f.w == 220 and f.h == 160, "the card shrinks below its content: " .. f.w .. "x" .. f.h)
+    t.ok(C.overflow and C.more.shown, "and the rest is behind More")
+    C.StartSizing()
+    f.w, f.h = 2000, 10
+    C.grip.scripts.OnUpdate()
+    C.StopSizing()
+    t.ok(OXP.settings.cardWidth == 640 and OXP.settings.cardHeight == 150, "kept within bounds")
+
+    -- the next step: More closes, back at the top
+    C.SetExpanded(true)
+    C.GoNext()
+    t.ok(not C.expanded and (C.view.scroll or 0) == 0, "a new step starts closed and at the top")
+    t.eq(f.h, 150, "still the height you chose")
+    -- collapsed and back
+    C.SetCollapsed(true)
+    t.eq(f.h, 42, "collapsed: one line")
+    C.SetCollapsed(false)
+    t.eq(f.h, 150, "expanded again: your height")
+    -- animations off
+    OXP.settings.cardAnimations = false
+    played = 0
+    C.GoBack()
+    t.eq(played, 0, "Animate step changes off: no fade")
+    OXP.settings.cardAnimations = true
+    t.eq(#game.errors, 0, "no Lua errors: " .. table.concat(game.errors, " | "))
+    t.ok(not C.lastError, "no card errors: " .. tostring(C.lastError))
+end
+
+print("-- one block failing still lays out and sizes the card, with one red line")
+do
+    local game, OXP = newGame({ level = 21 })
+    local g = addGuide(OXP, {
+        { completewith = "next", { "zone", name = "Duskwood", text = "Run to Duskwood" } },
+        { { "text", text = "Talk to Bob" }, { "accept", quest = 600, text = "Accept Bob's Task" } },
+        { { "turnin", quest = 600 } },
+    })
+    OXP.Engine.Load(g.key)
+    local C, f = OXP.Card, OXP.Card.frame
+    local old = C.StepContent
+    C.StepContent = function(step)
+        if step.completewith then error("boom") end
+        return old(step)
+    end
+    local printed = {}
+    local oldPrint = print
+    print = function(msg) printed[#printed + 1] = tostring(msg) end
+    C.Refresh(true)
+    C.Refresh(true)
+    print = oldPrint
+    C.StepContent = old
+    local errors = 0
+    for _, line in ipairs(printed) do if line:find("OpenXP card error", 1, true) then errors = errors + 1 end end
+    t.eq(errors, 1, "one card error line: " .. table.concat(printed, " | "))
+    t.ok(C.blocks[1].shown and C.blocks[1].title.text:find("Talk to Bob", 1, true), "the good step is still shown")
+    t.ok(not C.blocks[2].shown, "the broken one is left out")
+    t.eq(f.h, 300, "the card is still sized")
+    t.ok(C.bar.shown and C.view.h > 1, "and laid out")
+    C.lastError = nil
+end
+
+print("-- a chain walk: the target button follows the walk's quest (#14)")
+do
+    local game, OXP = newGame({ level = 21 })
+    OXP.QuestDB.data = { prereqs = { [7000002] = { all = { 7000001 } } }, chains = { [7000002] = { 7000001 } },
+                         info = { [7000001] = { n = "Part One", l = 20, s = { "Bob", 1453, 40, 40 }, f = { "Alice", 1453, 40, 40 }, o = {} } } }
+    local g = addGuide(OXP, {
+        { { "target", name = "Guide Person" }, { "accept", quest = 7000002, text = "Accept Part Two" } },
+        { { "turnin", quest = 7000002 } },
+    })
+    OXP.Engine.Load(g.key)
+    local C, B = OXP.Card, OXP.ActionButtons
+    C.Refresh(true)
+    t.eq(B.WantedTarget(), "Guide Person", "on the guide: the step's person")
+    C.blocks[1].warn.chain.scripts.OnClick()
+    game:Flush()
+    t.eq(B.WantedTarget(), "Bob", "walking the chain: who gives the walk's quest")
+    t.eq(B.target.unitName, "Bob", "and the button was told at once")
+    game:Accept(7000001, 1)
+    t.eq(B.WantedTarget(), nil, "on the quest, nothing known to kill: no target")
+    game:FinishObjective(7000001, 1)
+    t.eq(B.WantedTarget(), "Alice", "objectives done: who to hand it in to")
+    C.StopDetour()
+    game:Flush()
+    t.eq(B.WantedTarget(), "Guide Person", "back to the guide: the step's person again")
+    OXP.QuestDB.data = {}
+    t.eq(#game.errors, 0, "no Lua errors: " .. table.concat(game.errors, " | "))
+end
+
+------------------------------------------------------------------------
 print("-- every guide text shows real colours")
 do
     local _, OXP = newGame({ level = 21 })
