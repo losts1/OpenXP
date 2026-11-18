@@ -916,6 +916,17 @@ function addon.GetQuestObjectives(id, step, useCache)
     end
 end
 
+-- A private tooltip for reading names off the game. Never use GameTooltip
+-- for scanning: the player may be looking at it.
+function addon.GetScanTooltip()
+    local tip = addon.scanTooltip
+    if not tip then
+        tip = CreateFrame("GameTooltip", "OpenXPScanTooltip", nil, "GameTooltipTemplate")
+        addon.scanTooltip = tip
+    end
+    return tip
+end
+
 local NPCNames = {}
 function addon.GetNpcName(id)
     local npc = NPCNames[id]
@@ -925,12 +936,16 @@ function addon.GetNpcName(id)
     elseif type(npc) == "string" then
         return npc
     elseif not npc or GetTime()-npc > 1.5  then
-        GameTooltip:SetOwner(WorldFrame, "ANCHOR_BOTTOMRIGHT")
-        GameTooltip:ClearLines()
-        GameTooltip:SetHyperlink(string.format("unit:Creature-0-0-0-0-%d",id))
+        -- Look the name up on our own hidden tooltip. Using GameTooltip here
+        -- hid whatever tooltip the player was reading (bags, items, units)
+        -- every 1.5 s while the card showed an NPC the game had not cached.
+        local tip = addon.GetScanTooltip()
+        tip:SetOwner(WorldFrame, "ANCHOR_NONE")
+        tip:ClearLines()
+        tip:SetHyperlink(string.format("unit:Creature-0-0-0-0-%d",id))
         local name
-        if GameTooltip:IsShown() then
-            name = GameTooltipTextLeft1:GetText()
+        if tip:NumLines() > 0 then
+            name = _G[tip:GetName() .. "TextLeft1"]:GetText()
             --DevTools_Dump(name)
             if name and not addon.IsSecretValue(name) then
                 name = name:match("^|c%x%x%x%x%x%x%x%x(.*)|") or name
@@ -939,7 +954,7 @@ function addon.GetNpcName(id)
                 name = nil
             end
         end
-        GameTooltip:Hide()
+        tip:Hide()
         if name then
             return name
         else
