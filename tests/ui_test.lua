@@ -564,6 +564,91 @@ do
 end
 
 ------------------------------------------------------------------------
+print("-- the settings window: a page per category, controls change settings live")
+do
+    local game, OXP = newGame({ level = 21 })
+    local S = OXP.Settings
+    S.Show()
+    t.ok(S.frame and S.frame.shown, "settings shown")
+    local changed = 0
+    OXP.Listen("SETTINGS_CHANGED", function() changed = changed + 1 end)
+    for _, def in ipairs(S.PAGES) do
+        local page = S.Select(def.key)
+        t.ok(page and page.area.shown, "page " .. def.key .. " opens")
+        t.ok(#page.rows > 0, "page " .. def.key .. " has rows")
+    end
+    local card = S.Page("card")
+    t.ok(card.preview ~= nil, "the card page has a live preview")
+    local tog = card.toggles.cardAnimations
+    tog.scripts.OnClick(tog)
+    t.eq(OXP.settings.cardAnimations, false, "a toggle switches its setting off")
+    tog.scripts.OnClick(tog)
+    t.eq(OXP.settings.cardAnimations, true, "and on again")
+    card.sliders.fontSize:SetValue(15)
+    t.eq(OXP.settings.fontSize, 15, "the text size slider sets the size")
+    card.sliders.fontSize:SetValue(99)
+    t.eq(OXP.settings.fontSize, 20, "but not past its end")
+    card.sliders.cardScale:SetValue(1.13)
+    t.ok(math.abs(OXP.settings.cardScale - 1.15) < 0.001, "card scale snaps to its steps: " .. OXP.settings.cardScale)
+    local dd = card.dropdowns.fontOutline
+    dd:Open()
+    local list = _G.OpenXPDropdownList
+    t.ok(list and list.shown and #list.rows == 3, "the dropdown lists its choices")
+    list.rows[2].scripts.OnClick(list.rows[2])
+    t.eq(OXP.settings.fontOutline, "OUTLINE", "picking one sets it")
+    t.ok(not list.shown, "and closes the list")
+    t.ok(changed >= 5, "every change is sent out (" .. changed .. ")")
+    local auto = S.Page("auto")
+    auto.toggles.autoBestReward.scripts.OnClick(auto.toggles.autoBestReward)
+    t.eq(OXP.settings.autoBestReward, true, "automation toggles work")
+    t.eq(#game.errors, 0, "no Lua errors: " .. table.concat(game.errors, " | "))
+end
+
+print("-- Pick a guide: grouped by level, search, current guide, start")
+do
+    local game, OXP = newGame({ level = 22 })
+    local a = addGuide(OXP, { { { "text", text = "Run to Darkshire" }, { "accept", quest = 1 } }, { { "accept", quest = 2 } } })
+    local b = addGuide(OXP, { { { "text", text = "Kill wolves" }, { "accept", quest = 3 } } })
+    b.name = "25-27 Somewhere Else"
+    b.minLevel, b.maxLevel = 25, 27
+    OXP.Engine.Load(a.key)
+    local P = OXP.GuidePicker
+    P.Toggle()
+    local menu = _G.OpenXPMenu
+    t.ok(menu and menu.shown, "the menu opens")
+    local labels = {}
+    for _, e in ipairs(P.MenuEntries()) do labels[#labels + 1] = e.text end
+    t.ok(table.concat(labels, ","):find("Pick a guide,Find my place", 1, true), "menu: " .. table.concat(labels, ","))
+    P.MenuEntries()[1].fn()
+    local win = P.window
+    t.ok(win and win.shown, "Pick a guide opens")
+    local rows = P.ListRows("")
+    t.ok(rows[1] and rows[1].header, "the list starts with a group heading")
+    local found = false
+    for _, r in ipairs(rows) do if r.guide == a then found = true end end
+    t.ok(found, "your guides are listed")
+    t.ok(win.details.shown and win.details.zone.text == "Test Zone " .. a.name:match("(%d+)$"), "the current guide is selected: " .. tostring(win.details.zone.text))
+    t.eq(win.details.start.enabled, false, "and its Start button says you're on it")
+    local hits = P.ListRows("somewhere")
+    t.ok(#hits == 2 and hits[2].guide == b, "search by zone")
+    hits = P.ListRows("26")
+    local hasA, hasB = false, false
+    for _, r in ipairs(hits) do
+        if r.guide == a then hasA = true end
+        if r.guide == b then hasB = true end
+    end
+    t.ok(hasB and not hasA, "search by level: the guides that cover it")
+    t.eq(#P.ListRows("nothing like this"), 0, "no match: empty")
+    P.Select(b)
+    t.ok(win.details.start.enabled and win.details.start.label.text == "Start guide", "another guide: Start guide")
+    t.ok(win.details.first.text:find("Kill wolves", 1, true), "the details show how it starts")
+    P.Start()
+    t.eq(OXP.Engine.GetGuide(), b, "Start loads it")
+    t.ok(not win.shown, "and closes the window")
+    t.eq(#game.errors, 0, "no Lua errors: " .. table.concat(game.errors, " | "))
+end
+
+------------------------------------------------------------------------
 print("-- every guide text shows real colours")
 do
     local _, OXP = newGame({ level = 21 })

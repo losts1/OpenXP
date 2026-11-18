@@ -1,5 +1,8 @@
--- OpenXP's look, shared by every window: colours, fonts and small widgets
--- (icon buttons, text buttons, status pills, step badges).
+-- OpenXP's look, shared by every window: colours, spacing, fonts, short
+-- fades, and the widgets the windows are built from (windows, buttons,
+-- toggles, sliders, dropdowns, search boxes, scrolling lists, status pills,
+-- step badges). Dark and quiet: one accent colour, 1 px lines, hover and
+-- pressed states on everything you can click.
 local ADDON, OXP = ...
 
 local Style = {}
@@ -12,26 +15,40 @@ Style.WHITE = "Interface\\Buttons\\WHITE8X8"
 local TEX, WHITE = Style.TEX, Style.WHITE
 
 Style.C = {
-    bg = { 16 / 255, 17 / 255, 21 / 255, 0.9 },
-    bgSolid = { 16 / 255, 17 / 255, 21 / 255, 0.96 },
-    panel = { 22 / 255, 24 / 255, 29 / 255, 0.9 },
-    border = { 150 / 255, 160 / 255, 180 / 255, 0.35 },
-    line = { 60 / 255, 66 / 255, 78 / 255 },
-    text = { 0.92, 0.93, 0.95 },
-    dim = { 0.62, 0.64, 0.70 },
-    faint = { 0.54, 0.56, 0.61 },
+    bg = { 14 / 255, 15 / 255, 19 / 255, 0.94 },
+    bgSolid = { 15 / 255, 16 / 255, 20 / 255, 0.98 },
+    panel = { 22 / 255, 24 / 255, 30 / 255, 1 },
+    raised = { 30 / 255, 33 / 255, 41 / 255, 1 },
+    hover = { 1, 1, 1, 0.06 },
+    border = { 1, 1, 1, 0.10 },
+    borderStrong = { 1, 1, 1, 0.18 },
+    line = { 1, 1, 1, 0.07 },
+    text = { 0.93, 0.94, 0.96 },
+    dim = { 0.63, 0.66, 0.72 },
+    faint = { 0.47, 0.50, 0.56 },
     blue = { 90 / 255, 184 / 255, 1 },
+    accentDark = { 32 / 255, 78 / 255, 120 / 255 },
     gold = { 242 / 255, 195 / 255, 92 / 255 },
     orange = { 1, 112 / 255, 67 / 255 },
+    red = { 235 / 255, 87 / 255, 87 / 255 },
     cyan = { 38 / 255, 198 / 255, 218 / 255 },
     purple = { 179 / 255, 157 / 255, 219 / 255 },
     green = { 61 / 255, 187 / 255, 122 / 255 },
 }
 local C = Style.C
 
+-- spacing: every window uses these, so margins line up everywhere
+Style.S = { xs = 4, sm = 8, md = 12, lg = 16, xl = 24, header = 48, footer = 52, row = 52 }
+local S = Style.S
+
 function Style.Tint(tex, color, alpha)
     tex:SetVertexColor(color[1], color[2], color[3], alpha or color[4] or 1)
 end
+
+local function Fill(tex, color, alpha)
+    tex:SetColorTexture(color[1], color[2], color[3], alpha or color[4] or 1)
+end
+Style.Fill = Fill
 
 --- A 1px-bordered dark backdrop.
 function Style.Backdrop(f, bg, border)
@@ -50,8 +67,8 @@ function Style.SetFont(fs, offset, flags)
     OXP.Fonts.Apply(fs, OXP.Fonts.Path(), Style.FontSize(offset), OXP.Fonts.Flags(flags))
 end
 
--- text with a size of its own (button labels): remembered so a font change
--- reaches it without a /reload
+-- text with a size of its own (window text, button labels): remembered so
+-- a font change reaches it without a /reload
 local fixed = setmetatable({}, { __mode = "k" })
 function Style.FixedFont(fs, size, flags)
     fixed[fs] = { size, flags }
@@ -63,13 +80,90 @@ OXP.Listen("SETTINGS_CHANGED", function()
     end
 end)
 
+--- A font string in the chosen font at a fixed size and colour.
+function Style.Text(parent, size, color, layer)
+    local fs = parent:CreateFontString(nil, layer or "OVERLAY", "GameFontHighlight")
+    Style.FixedFont(fs, size or 12, "")
+    fs:SetTextColor(unpack(color or C.text))
+    fs:SetJustifyH("LEFT")
+    return fs
+end
+
+--- A 1 px line across a frame (horizontal unless `vertical`).
+function Style.Divider(parent, vertical, color)
+    local t = parent:CreateTexture(nil, "ARTWORK")
+    Fill(t, color or C.line)
+    if vertical then t:SetWidth(1) else t:SetHeight(1) end
+    return t
+end
+
 local function Tooltip(self, title, body)
+    if not title then return end
     GameTooltip:SetOwner(self, "ANCHOR_TOP")
     GameTooltip:SetText(title, 1, 1, 1, 1, true)
     if body then GameTooltip:AddLine(body, 0.8, 0.8, 0.8, true) end
     GameTooltip:Show()
 end
 Style.Tooltip = Tooltip
+
+---------------------------------------------------------------------------
+-- Motion: short fades and value glides, driven by one OnUpdate
+---------------------------------------------------------------------------
+
+local tweens = {}
+local driver = CreateFrame("Frame")
+driver:Hide()
+driver:SetScript("OnUpdate", function(self, dt)
+    local any = false
+    for key, tw in pairs(tweens) do
+        tw.t = math.min(tw.duration, tw.t + (dt or 0))
+        local p = tw.duration > 0 and tw.t / tw.duration or 1
+        p = 1 - (1 - p) ^ 3
+        tw.apply(tw.from + (tw.to - tw.from) * p)
+        if tw.t >= tw.duration then
+            tweens[key] = nil
+            if tw.done then tw.done() end
+        else
+            any = true
+        end
+    end
+    if not any and next(tweens) == nil then self:Hide() end
+end)
+Style.driver = driver
+
+--- Glide a value from `from` to `to` over `duration` seconds (ease-out),
+--- calling apply(value) each frame. A new tween with the same key replaces
+--- the running one.
+function Style.Tween(key, from, to, duration, apply, done)
+    if (duration or 0) <= 0 or (OXP.settings and OXP.settings.cardAnimations == false) then
+        tweens[key] = nil
+        apply(to)
+        if done then done() end
+        return
+    end
+    tweens[key] = { from = from, to = to, duration = duration, t = 0, apply = apply, done = done }
+    apply(from)
+    driver:Show()
+end
+
+--- Fade a frame in (shown) or out (then hidden).
+function Style.Fade(frame, show, duration)
+    local from = frame:GetAlpha() or 1
+    if show then
+        if not frame:IsShown() then from = 0 end
+        frame:Show()
+        Style.Tween(frame, from, 1, duration or 0.15, function(a) frame:SetAlpha(a) end)
+    else
+        Style.Tween(frame, from, 0, duration or 0.12, function(a) frame:SetAlpha(a) end, function()
+            frame:Hide()
+            frame:SetAlpha(1)
+        end)
+    end
+end
+
+---------------------------------------------------------------------------
+-- Buttons
+---------------------------------------------------------------------------
 
 --- A flat icon button (Media/Card/<icon>), or a wider one with a label.
 function Style.IconButton(parent, icon, tip, onClick, label)
@@ -82,8 +176,9 @@ function Style.IconButton(parent, icon, tip, onClick, label)
     btn.icon:SetTexture(TEX .. icon)
     btn.icon:SetSize(16, 16)
     local light = { 159 / 255, 212 / 255, 1 }
+    local idle = label and { C.blue[1], C.blue[2], C.blue[3], 0.16 } or { 1, 1, 1, 0 }
+    btn.bg:SetVertexColor(unpack(idle))
     if label then
-        btn.bg:SetVertexColor(C.blue[1], C.blue[2], C.blue[3], 0.16)
         btn.icon:SetPoint("LEFT", 10, 0)
         Style.Tint(btn.icon, light)
         btn.label = btn:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
@@ -92,22 +187,21 @@ function Style.IconButton(parent, icon, tip, onClick, label)
         btn.label:SetText(label)
         btn.label:SetTextColor(light[1], light[2], light[3])
     else
-        btn.bg:SetVertexColor(1, 1, 1, 0)
         btn.icon:SetPoint("CENTER")
-        Style.Tint(btn.icon, { 0.87, 0.88, 0.92 })
+        Style.Tint(btn.icon, { 0.80, 0.82, 0.88 })
     end
     btn:SetScript("OnEnter", function(self)
-        self.bg:SetVertexColor(1, 1, 1, 0.1)
+        self.bg:SetVertexColor(1, 1, 1, label and 0.14 or 0.08)
+        if not label then Style.Tint(self.icon, { 1, 1, 1 }) end
         Tooltip(self, tip)
     end)
     btn:SetScript("OnLeave", function(self)
-        if label then
-            self.bg:SetVertexColor(C.blue[1], C.blue[2], C.blue[3], 0.16)
-        else
-            self.bg:SetVertexColor(1, 1, 1, 0)
-        end
+        self.bg:SetVertexColor(unpack(idle))
+        if not label then Style.Tint(self.icon, { 0.80, 0.82, 0.88 }) end
         GameTooltip:Hide()
     end)
+    btn:SetScript("OnMouseDown", function(self) self.icon:SetAlpha(0.7) end)
+    btn:SetScript("OnMouseUp", function(self) self.icon:SetAlpha(1) end)
     btn:SetScript("OnClick", onClick)
     return btn
 end
@@ -129,30 +223,367 @@ function Style.TextButton(parent, text, tip, onClick)
     end
     btn:SetLabel(text)
     btn:SetScript("OnEnter", function(self)
-        self.bg:SetColorTexture(1, 1, 1, 0.16)
+        self.bg:SetColorTexture(1, 1, 1, 0.15)
         if tip then Tooltip(self, tip) end
     end)
     btn:SetScript("OnLeave", function(self)
         self.bg:SetColorTexture(1, 1, 1, 0.08)
         GameTooltip:Hide()
     end)
+    btn:SetScript("OnMouseDown", function(self) self.bg:SetColorTexture(1, 1, 1, 0.04) end)
+    btn:SetScript("OnMouseUp", function(self) self.bg:SetColorTexture(1, 1, 1, self:IsMouseOver() and 0.15 or 0.08) end)
     btn:SetScript("OnClick", onClick)
     return btn
 end
 
---- A bigger bordered button for dialogs (primary: blue).
-function Style.DialogButton(parent, text, primary, width)
+local BUTTON_KINDS = {
+    primary = { bg = C.accentDark, border = C.blue, hover = { 42 / 255, 98 / 255, 148 / 255, 1 }, text = { 1, 1, 1 } },
+    secondary = { bg = C.raised, border = C.borderStrong, hover = { 40 / 255, 44 / 255, 54 / 255, 1 }, text = C.text },
+    ghost = { bg = { 0, 0, 0, 0 }, border = { 0, 0, 0, 0 }, hover = { 1, 1, 1, 0.06 }, text = C.dim },
+    danger = { bg = { 70 / 255, 26 / 255, 26 / 255, 1 }, border = C.red, hover = { 96 / 255, 34 / 255, 34 / 255, 1 }, text = { 1, 0.9, 0.9 } },
+}
+
+--- A dialog button. kind: "primary" (accent), "secondary", "ghost" or
+--- "danger". btn:SetEnabled(false) greys it out.
+function Style.Button(parent, text, kind, width, onClick, tip)
     local b = CreateFrame("Button", nil, parent, "BackdropTemplate")
-    b:SetSize(width or 150, 28)
-    Style.Backdrop(b, primary and { 28 / 255, 70 / 255, 104 / 255, 1 } or C.panel, primary and C.blue or C.line)
+    local k = BUTTON_KINDS[kind or "secondary"] or BUTTON_KINDS.secondary
+    b.kind = k
+    b:SetSize(width or 140, 30)
+    Style.Backdrop(b, k.bg, k.border)
     b.label = b:CreateFontString(nil, "OVERLAY", "GameFontNormal")
+    Style.FixedFont(b.label, 13, "")
     b.label:SetPoint("CENTER")
     b.label:SetText(text)
-    b.label:SetTextColor(unpack(primary and { 1, 1, 1 } or C.text))
-    b:SetScript("OnEnter", function(self) self:SetBackdropBorderColor(1, 1, 1, 0.8) end)
-    b:SetScript("OnLeave", function(self) self:SetBackdropBorderColor(unpack(primary and C.blue or C.line)) end)
+    b.label:SetTextColor(unpack(k.text))
+    b.enabled = true
+    function b:SetLabel(t) self.label:SetText(t) end
+    function b:SetEnabled(on)
+        self.enabled = on and true or false
+        self:SetAlpha(self.enabled and 1 or 0.45)
+        if self.EnableMouse then self:EnableMouse(self.enabled) end
+    end
+    b:SetScript("OnEnter", function(self)
+        self:SetBackdropColor(unpack(k.hover))
+        if kind == "ghost" then self.label:SetTextColor(unpack(C.text)) end
+        Tooltip(self, tip and text, tip)
+    end)
+    b:SetScript("OnLeave", function(self)
+        self:SetBackdropColor(unpack(k.bg))
+        self.label:SetTextColor(unpack(k.text))
+        GameTooltip:Hide()
+    end)
+    b:SetScript("OnMouseDown", function(self) self.label:SetPoint("CENTER", 0, -1) end)
+    b:SetScript("OnMouseUp", function(self) self.label:SetPoint("CENTER", 0, 0) end)
+    if onClick then
+        b:SetScript("OnClick", function(self, ...) if self.enabled then onClick(self, ...) end end)
+    end
     return b
 end
+
+--- A bigger bordered button for dialogs (primary: accent).
+function Style.DialogButton(parent, text, primary, width)
+    return Style.Button(parent, text, primary and "primary" or "secondary", width or 150)
+end
+
+---------------------------------------------------------------------------
+-- Controls: toggle, slider, dropdown, search box
+---------------------------------------------------------------------------
+
+--- An on/off switch. get() -> bool, set(bool).
+function Style.Toggle(parent, get, set)
+    local t = CreateFrame("Button", nil, parent)
+    t:SetSize(36, 20)
+    t.track = t:CreateTexture(nil, "BACKGROUND")
+    t.track:SetTexture(TEX .. "filledcircle") -- ends
+    t.track:SetAllPoints()
+    t.track:SetAlpha(0)
+    t.bar = t:CreateTexture(nil, "BORDER")
+    t.bar:SetPoint("TOPLEFT", 0, -3)
+    t.bar:SetPoint("BOTTOMRIGHT", 0, 3)
+    t.bar:SetTexture(WHITE)
+    t.knob = t:CreateTexture(nil, "ARTWORK")
+    t.knob:SetTexture(TEX .. "filledcircle")
+    t.knob:SetSize(16, 16)
+    local function Paint(on, animate)
+        local x0, x1 = on and 2 or 18, on and 18 or 2
+        Style.Tint(t.bar, on and C.blue or C.raised, on and 0.85 or 1)
+        Style.Tint(t.knob, on and { 1, 1, 1 } or C.dim)
+        if animate then
+            Style.Tween(t, x0, x1, 0.12, function(x) t.knob:ClearAllPoints() t.knob:SetPoint("LEFT", x, 0) end)
+        else
+            t.knob:ClearAllPoints()
+            t.knob:SetPoint("LEFT", x1, 0)
+        end
+    end
+    function t:Update() Paint(get() and true or false, false) end
+    t:SetScript("OnClick", function()
+        local on = not get()
+        set(on)
+        Paint(on, true)
+    end)
+    t:SetScript("OnEnter", function(self) self.knob:SetAlpha(0.85) end)
+    t:SetScript("OnLeave", function(self) self.knob:SetAlpha(1) end)
+    t:Update()
+    return t
+end
+
+--- A horizontal slider. opts: min, max, step, get() -> number, set(n),
+--- format(n) -> text. Drag the thumb, click the track or use the wheel.
+function Style.Slider(parent, width, opts)
+    local s = CreateFrame("Frame", nil, parent)
+    s:SetSize(width, 20)
+    s:EnableMouse(true)
+    s:EnableMouseWheel(true)
+    s.value = Style.Text(s, 12, C.blue)
+    s.value:SetPoint("RIGHT", 0, 0)
+    s.value:SetJustifyH("RIGHT")
+    s.value:SetWidth(46)
+    s.track = s:CreateTexture(nil, "BACKGROUND")
+    s.track:SetHeight(4)
+    s.track:SetPoint("LEFT", 0, 0)
+    s.track:SetPoint("RIGHT", s.value, "LEFT", -10, 0)
+    Fill(s.track, C.raised)
+    s.fill = s:CreateTexture(nil, "BORDER")
+    s.fill:SetHeight(4)
+    s.fill:SetPoint("LEFT", s.track, "LEFT")
+    Fill(s.fill, C.blue, 0.9)
+    s.thumb = s:CreateTexture(nil, "ARTWORK")
+    s.thumb:SetTexture(TEX .. "filledcircle")
+    s.thumb:SetSize(14, 14)
+    local lo, hi, step = opts.min, opts.max, opts.step or 1
+    local function Snap(v)
+        v = math.max(lo, math.min(hi, v))
+        return math.floor((v - lo) / step + 0.5) * step + lo
+    end
+    local function TrackWidth() return math.max(1, (s.track:GetWidth() or (width - 56))) end
+    function s:Update()
+        local v = opts.get() or lo
+        local frac = (hi > lo) and (v - lo) / (hi - lo) or 0
+        local w = TrackWidth()
+        self.fill:SetWidth(math.max(1, w * frac))
+        self.thumb:ClearAllPoints()
+        self.thumb:SetPoint("CENTER", self.track, "LEFT", w * frac, 0)
+        self.value:SetText(opts.format and opts.format(v) or tostring(v))
+    end
+    function s:SetValue(v)
+        v = Snap(v)
+        if v ~= opts.get() then opts.set(v) end
+        self:Update()
+    end
+    local function FromCursor()
+        local x = GetCursorPosition()
+        local scale = s:GetEffectiveScale() or 1
+        local left = s.track:GetLeft() or 0
+        s:SetValue(lo + (x / scale - left) / TrackWidth() * (hi - lo))
+    end
+    s:SetScript("OnMouseDown", function(self)
+        self.dragging = true
+        FromCursor()
+    end)
+    s:SetScript("OnMouseUp", function(self) self.dragging = false end)
+    s:SetScript("OnUpdate", function(self) if self.dragging then FromCursor() end end)
+    s:SetScript("OnMouseWheel", function(self, delta) self:SetValue((opts.get() or lo) + delta * step) end)
+    s:SetScript("OnEnter", function(self) Style.Tint(self.thumb, C.blue) end)
+    s:SetScript("OnLeave", function(self) Style.Tint(self.thumb, { 1, 1, 1 }) end)
+    s:Update()
+    return s
+end
+
+-- one shared popup for every dropdown
+local popup
+local function Popup()
+    if popup then return popup end
+    popup = CreateFrame("Frame", "OpenXPDropdownList", UIParent, "BackdropTemplate")
+    Style.Backdrop(popup, C.bgSolid, C.borderStrong)
+    popup:SetFrameStrata("FULLSCREEN_DIALOG")
+    popup:EnableMouse(true)
+    popup:SetClampedToScreen(true)
+    popup.rows = {}
+    popup:Hide()
+    if _G.UISpecialFrames then tinsert(_G.UISpecialFrames, "OpenXPDropdownList") end
+    return popup
+end
+
+--- A dropdown. choices: { { value, text }, ... }, get() -> value, set(value).
+function Style.Dropdown(parent, width, choices, get, set)
+    local d = CreateFrame("Button", nil, parent, "BackdropTemplate")
+    d:SetSize(width, 26)
+    Style.Backdrop(d, C.raised, C.borderStrong)
+    d.text = Style.Text(d, 12, C.text)
+    d.text:SetPoint("LEFT", 10, 0)
+    d.text:SetPoint("RIGHT", -24, 0)
+    d.text:SetWordWrap(false)
+    d.arrow = d:CreateTexture(nil, "ARTWORK")
+    d.arrow:SetTexture(TEX .. "down")
+    d.arrow:SetSize(12, 12)
+    d.arrow:SetPoint("RIGHT", -8, 0)
+    Style.Tint(d.arrow, C.dim)
+    d.choices = choices
+    local function TextOf(v)
+        for _, c in ipairs(type(d.choices) == "function" and d.choices() or d.choices) do
+            if c[1] == v then return c[2] end
+        end
+        return tostring(v)
+    end
+    function d:Update() self.text:SetText(TextOf(get())) end
+    function d:Open()
+        local p = Popup()
+        if p:IsShown() and p.owner == self then p:Hide() return end
+        p.owner = self
+        local list = type(self.choices) == "function" and self.choices() or self.choices
+        local cur = get()
+        p:ClearAllPoints()
+        p:SetPoint("TOPLEFT", self, "BOTTOMLEFT", 0, -2)
+        p:SetWidth(self:GetWidth() or width)
+        for i, c in ipairs(list) do
+            local row = p.rows[i]
+            if not row then
+                row = CreateFrame("Button", nil, p)
+                row:SetHeight(24)
+                row.hl = row:CreateTexture(nil, "BACKGROUND")
+                row.hl:SetAllPoints()
+                Fill(row.hl, C.hover, 0)
+                row.check = row:CreateTexture(nil, "ARTWORK")
+                row.check:SetTexture(TEX .. "check")
+                row.check:SetSize(12, 12)
+                row.check:SetPoint("RIGHT", -8, 0)
+                Style.Tint(row.check, C.blue)
+                row.text = Style.Text(row, 12, C.text)
+                row.text:SetPoint("LEFT", 10, 0)
+                row.text:SetPoint("RIGHT", -24, 0)
+                row:SetScript("OnEnter", function(r) Fill(r.hl, { 1, 1, 1 }, 0.07) end)
+                row:SetScript("OnLeave", function(r) Fill(r.hl, { 1, 1, 1 }, 0) end)
+                row:SetScript("OnClick", function(r)
+                    p:Hide()
+                    if r.owner then r.owner.pick(r.value) end
+                end)
+                p.rows[i] = row
+            end
+            row:ClearAllPoints()
+            row:SetPoint("TOPLEFT", 1, -1 - (i - 1) * 24)
+            row:SetPoint("TOPRIGHT", -1, -1 - (i - 1) * 24)
+            row.value, row.owner = c[1], self
+            row.text:SetText(c[2])
+            row.text:SetTextColor(unpack(c[1] == cur and C.blue or C.text))
+            row.check:SetShown(c[1] == cur)
+            row:Show()
+        end
+        for i = #list + 1, #p.rows do p.rows[i]:Hide() end
+        p:SetHeight(#list * 24 + 2)
+        Style.Fade(p, true, 0.1)
+    end
+    function d.pick(v)
+        set(v)
+        d:Update()
+    end
+    d:SetScript("OnClick", function(self) self:Open() end)
+    d:SetScript("OnEnter", function(self) self:SetBackdropBorderColor(unpack(C.blue)) end)
+    d:SetScript("OnLeave", function(self) self:SetBackdropBorderColor(unpack(C.borderStrong)) end)
+    d:SetScript("OnHide", function(self) if popup and popup.owner == self then popup:Hide() end end)
+    d:Update()
+    return d
+end
+
+--- A search box: onChange(text) on every key.
+function Style.SearchBox(parent, width, placeholder, onChange)
+    local box = CreateFrame("EditBox", nil, parent, "BackdropTemplate")
+    box:SetSize(width, 28)
+    Style.Backdrop(box, C.panel, C.borderStrong)
+    box:SetAutoFocus(false)
+    box:SetTextInsets(28, 24, 0, 0)
+    OXP.Fonts.Apply(box, OXP.Fonts.Path(), 12, "")
+    box:SetTextColor(unpack(C.text))
+    box.icon = box:CreateTexture(nil, "ARTWORK")
+    box.icon:SetTexture("Interface\\Common\\UI-Searchbox-Icon")
+    box.icon:SetSize(14, 14)
+    box.icon:SetPoint("LEFT", 9, -1)
+    Style.Tint(box.icon, C.dim)
+    box.hint = Style.Text(box, 12, C.faint)
+    box.hint:SetPoint("LEFT", 28, 0)
+    box.hint:SetText(placeholder or "")
+    box.clear = CreateFrame("Button", nil, box)
+    box.clear:SetSize(16, 16)
+    box.clear:SetPoint("RIGHT", -6, 0)
+    box.clear.icon = box.clear:CreateTexture(nil, "ARTWORK")
+    box.clear.icon:SetAllPoints()
+    box.clear.icon:SetTexture(TEX .. "cross")
+    Style.Tint(box.clear.icon, C.dim)
+    box.clear:Hide()
+    box.clear:SetScript("OnClick", function()
+        box:SetText("")
+        box:ClearFocus()
+    end)
+    box:SetScript("OnTextChanged", function(self)
+        local text = self:GetText() or ""
+        self.hint:SetShown(text == "")
+        self.clear:SetShown(text ~= "")
+        if onChange then onChange(text) end
+    end)
+    box:SetScript("OnEscapePressed", function(self) self:ClearFocus() end)
+    box:SetScript("OnEnterPressed", function(self) self:ClearFocus() end)
+    box:SetScript("OnEditFocusGained", function(self) self:SetBackdropBorderColor(unpack(C.blue)) end)
+    box:SetScript("OnEditFocusLost", function(self) self:SetBackdropBorderColor(unpack(C.borderStrong)) end)
+    return box
+end
+
+---------------------------------------------------------------------------
+-- Scrolling: a clipped area with wheel scrolling and a thin scrollbar
+---------------------------------------------------------------------------
+
+--- A scroll area: area.content is what you fill; call area:SetContentHeight(h).
+function Style.ScrollArea(parent)
+    local area = CreateFrame("ScrollFrame", nil, parent)
+    if area.SetClipsChildren then area:SetClipsChildren(true) end
+    local content = CreateFrame("Frame", nil, area)
+    content:SetSize(10, 10)
+    area:SetScrollChild(content)
+    area.content = content
+    area.offset = 0
+    area:EnableMouseWheel(true)
+    local bar = CreateFrame("Frame", nil, area)
+    bar:SetWidth(4)
+    bar:SetPoint("TOPRIGHT", -2, -2)
+    bar:SetPoint("BOTTOMRIGHT", -2, 2)
+    bar.thumb = bar:CreateTexture(nil, "OVERLAY")
+    bar.thumb:SetWidth(4)
+    Fill(bar.thumb, { 1, 1, 1 }, 0.18)
+    area.bar = bar
+    function area:Max()
+        return math.max(0, (self.contentHeight or 0) - (self:GetHeight() or 0))
+    end
+    function area:Paint()
+        local max = self:Max()
+        self.offset = math.max(0, math.min(max, self.offset))
+        self:SetVerticalScroll(self.offset)
+        local h = self:GetHeight() or 0
+        if max <= 0 or h <= 0 then bar:Hide() return end
+        local th = math.max(24, h * h / (self.contentHeight or 1))
+        bar.thumb:SetHeight(th)
+        bar.thumb:ClearAllPoints()
+        bar.thumb:SetPoint("TOP", bar, "TOP", 0, -(h - 4 - th) * self.offset / max)
+        bar:Show()
+    end
+    function area:SetContentHeight(hgt)
+        self.contentHeight = hgt
+        content:SetHeight(math.max(1, hgt))
+        self:Paint()
+    end
+    function area:ScrollTo(y)
+        self.offset = y
+        self:Paint()
+    end
+    area:SetScript("OnMouseWheel", function(self, delta) self:ScrollTo(self.offset - delta * 40) end)
+    area:SetScript("OnSizeChanged", function(self, w)
+        if w and w > 0 then content:SetWidth(w) end
+        self:Paint()
+    end)
+    return area
+end
+
+---------------------------------------------------------------------------
+-- Pills and badges
+---------------------------------------------------------------------------
 
 Style.STATUS = {
     done = { text = "DONE", color = C.green, tip = "You finished this step." },
@@ -161,36 +592,29 @@ Style.STATUS = {
               tip = "An earlier quest in this chain was skipped, so this one can't be picked up yet." },
 }
 
---- A small status tag ("DONE", "SKIPPED", "CHAIN MISSED").
+--- A small coloured tag. pill:SetStatus("done") for a step status, or
+--- pill:SetTag(text, color).
 function Style.Pill(parent)
     local pill = CreateFrame("Frame", nil, parent)
     pill:SetHeight(14)
     pill.bg = pill:CreateTexture(nil, "BACKGROUND")
-    pill.bg:SetPoint("TOPLEFT", 1, 0)
-    pill.bg:SetPoint("BOTTOMRIGHT", -1, 0)
+    pill.bg:SetAllPoints()
     pill.bg:SetTexture(WHITE)
-    pill.l = pill:CreateTexture(nil, "BACKGROUND")
-    pill.l:SetPoint("TOPLEFT", 0, -1)
-    pill.l:SetPoint("BOTTOMLEFT", 0, 1)
-    pill.l:SetWidth(1)
-    pill.l:SetTexture(WHITE)
-    pill.r = pill:CreateTexture(nil, "BACKGROUND")
-    pill.r:SetPoint("TOPRIGHT", 0, -1)
-    pill.r:SetPoint("BOTTOMRIGHT", 0, 1)
-    pill.r:SetWidth(1)
-    pill.r:SetTexture(WHITE)
     pill.text = pill:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
     pill.text:SetPoint("CENTER", 0, 0)
+    function pill:SetTag(text, color, size)
+        if size then Style.FixedFont(self.text, size, "") else Style.SetFont(self.text, -3) end
+        self.text:SetText(text)
+        self.text:SetTextColor(color[1], color[2], color[3], 1)
+        self.bg:SetVertexColor(color[1], color[2], color[3], 0.16)
+        self:SetWidth((self.text:GetStringWidth() or 30) + 12)
+        self:SetHeight(math.max(14, (size or Style.FontSize(-3)) + 6))
+        self:Show()
+    end
     function pill:SetStatus(status)
         local st = status and Style.STATUS[status]
         if not st then self:Hide() return end
-        Style.SetFont(self.text, -3)
-        self.text:SetText(OXP.L(st.text))
-        self.text:SetTextColor(st.color[1], st.color[2], st.color[3], 1)
-        for _, t in ipairs({ self.bg, self.l, self.r }) do t:SetVertexColor(st.color[1], st.color[2], st.color[3], 0.16) end
-        self:SetWidth((self.text:GetStringWidth() or 30) + 12)
-        self:SetHeight(math.max(14, Style.FontSize(-3) + 5))
-        self:Show()
+        self:SetTag(OXP.L(st.text), st.color)
     end
     pill:Hide()
     return pill
@@ -240,30 +664,122 @@ function Style.Badge(parent, size)
     return b
 end
 
---- A dark movable dialog window with a title, closed by Escape.
-function Style.Window(name, width, height, title)
+---------------------------------------------------------------------------
+-- Windows
+---------------------------------------------------------------------------
+
+--- A soft shadow under a frame (its own frame, so it never covers it).
+function Style.Shadow(f)
+    local sh = CreateFrame("Frame", nil, UIParent)
+    sh:SetFrameStrata(f:GetFrameStrata() or "DIALOG")
+    sh:SetFrameLevel(math.max(0, (f:GetFrameLevel() or 1) - 1))
+    for i, spec in ipairs({ { 2, 0.30 }, { 5, 0.16 }, { 9, 0.07 } }) do
+        local t = sh:CreateTexture(nil, "BACKGROUND", nil, -i)
+        t:SetPoint("TOPLEFT", f, "TOPLEFT", -spec[1], spec[1] - 2)
+        t:SetPoint("BOTTOMRIGHT", f, "BOTTOMRIGHT", spec[1], -spec[1] - 3)
+        t:SetColorTexture(0, 0, 0, spec[2])
+    end
+    sh:SetShown(f:IsShown())
+    f:HookScript("OnShow", function() sh:Show() end)
+    f:HookScript("OnHide", function() sh:Hide() end)
+    f.shadow = sh
+    return sh
+end
+
+--- A dark movable window with a header (logo, title, subtitle, close),
+--- closed by Escape, fading in when shown. f.body is the area under the
+--- header; add a footer with Style.Footer(f).
+function Style.Window(name, width, height, title, subtitle)
     local f = CreateFrame("Frame", name, UIParent, "BackdropTemplate")
     f:SetSize(width, height)
     f:SetPoint("CENTER", 0, 40)
     f:SetFrameStrata("DIALOG")
+    f:SetToplevel(true)
     f:SetClampedToScreen(true)
     f:SetMovable(true)
     f:EnableMouse(true)
     f:RegisterForDrag("LeftButton")
     f:SetScript("OnDragStart", f.StartMoving)
     f:SetScript("OnDragStop", f.StopMovingOrSizing)
-    Style.Backdrop(f, C.bgSolid, C.blue)
+    Style.Backdrop(f, C.bgSolid, C.border)
     if name and _G.UISpecialFrames then tinsert(_G.UISpecialFrames, name) end
+    -- header
+    f.header = f:CreateTexture(nil, "BACKGROUND", nil, 1)
+    f.header:SetPoint("TOPLEFT", 1, -1)
+    f.header:SetPoint("TOPRIGHT", -1, -1)
+    f.header:SetHeight(S.header - 1)
+    Fill(f.header, C.panel)
+    f.accent = f:CreateTexture(nil, "ARTWORK")
+    f.accent:SetPoint("TOPLEFT", 1, -1)
+    f.accent:SetPoint("TOPRIGHT", -1, -1)
+    f.accent:SetHeight(2)
+    Fill(f.accent, C.blue, 0.9)
+    f.headerLine = Style.Divider(f)
+    f.headerLine:SetPoint("TOPLEFT", 1, -S.header)
+    f.headerLine:SetPoint("TOPRIGHT", -1, -S.header)
     f.logo = f:CreateTexture(nil, "OVERLAY")
     f.logo:SetTexture(Style.LOGO)
-    f.logo:SetSize(28, 28)
-    f.logo:SetPoint("TOPLEFT", 12, -10)
+    f.logo:SetSize(26, 26)
+    f.logo:SetPoint("LEFT", f, "TOPLEFT", S.lg, -S.header / 2)
     f.title = f:CreateFontString(nil, "OVERLAY", "GameFontNormalLarge")
-    f.title:SetPoint("LEFT", f.logo, "RIGHT", 8, 0)
+    Style.FixedFont(f.title, 15, "")
     f.title:SetText(title or "OpenXP")
     f.title:SetTextColor(1, 1, 1)
-    f.close = CreateFrame("Button", nil, f, "UIPanelCloseButton")
-    f.close:SetPoint("TOPRIGHT", -2, -2)
+    f.subtitle = Style.Text(f, 11, C.dim)
+    if subtitle then
+        f.title:SetPoint("BOTTOMLEFT", f.logo, "RIGHT", 10, 0)
+        f.subtitle:SetPoint("TOPLEFT", f.logo, "RIGHT", 10, -2)
+        f.subtitle:SetText(subtitle)
+    else
+        f.title:SetPoint("LEFT", f.logo, "RIGHT", 10, 0)
+    end
+    f.close = CreateFrame("Button", nil, f)
+    f.close:SetSize(28, 28)
+    f.close:SetPoint("RIGHT", f, "TOPRIGHT", -10, -S.header / 2)
+    f.close.bg = f.close:CreateTexture(nil, "BACKGROUND")
+    f.close.bg:SetAllPoints()
+    Fill(f.close.bg, { 1, 1, 1 }, 0)
+    f.close.icon = f.close:CreateTexture(nil, "ARTWORK")
+    f.close.icon:SetTexture(TEX .. "cross")
+    f.close.icon:SetSize(12, 12)
+    f.close.icon:SetPoint("CENTER")
+    Style.Tint(f.close.icon, C.dim)
+    f.close:SetScript("OnEnter", function(self)
+        Fill(self.bg, C.red, 0.25)
+        Style.Tint(self.icon, { 1, 1, 1 })
+    end)
+    f.close:SetScript("OnLeave", function(self)
+        Fill(self.bg, { 1, 1, 1 }, 0)
+        Style.Tint(self.icon, C.dim)
+    end)
+    f.close:SetScript("OnClick", function() f:Hide() end)
+    -- body: everything under the header
+    f.body = CreateFrame("Frame", nil, f)
+    f.body:SetPoint("TOPLEFT", 1, -S.header - 1)
+    f.body:SetPoint("BOTTOMRIGHT", -1, 1)
+    f:HookScript("OnShow", function(self)
+        self:SetAlpha(0)
+        Style.Tween(self, 0, 1, 0.15, function(a) self:SetAlpha(a) end)
+    end)
+    Style.Shadow(f)
     f:Hide()
     return f
+end
+
+--- A footer bar along the bottom of a window (for its buttons); the body
+--- then ends above it.
+function Style.Footer(f)
+    local foot = CreateFrame("Frame", nil, f)
+    foot:SetPoint("BOTTOMLEFT", 1, 1)
+    foot:SetPoint("BOTTOMRIGHT", -1, 1)
+    foot:SetHeight(S.footer)
+    foot.bg = foot:CreateTexture(nil, "BACKGROUND")
+    foot.bg:SetAllPoints()
+    Fill(foot.bg, C.panel)
+    foot.line = Style.Divider(foot)
+    foot.line:SetPoint("TOPLEFT")
+    foot.line:SetPoint("TOPRIGHT")
+    f.body:SetPoint("BOTTOMRIGHT", -1, S.footer + 1)
+    f.footer = foot
+    return foot
 end
