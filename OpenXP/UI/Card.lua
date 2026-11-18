@@ -50,6 +50,9 @@ f:SetMovable(true)
 f:EnableMouse(true)
 f:RegisterForDrag("LeftButton")
 Style.Backdrop(f, C.bg, C.border)
+-- nothing inside is ever drawn past the card's edge, also while you drag
+-- the grip (the step list and menus are parented elsewhere for that reason)
+if f.SetClipsChildren then f:SetClipsChildren(true) end
 f:Hide()
 
 local function SavePosition()
@@ -128,6 +131,21 @@ grip:SetScript("OnMouseUp", function() Card.StopSizing() end)
 grip:SetScript("OnHide", function() Card.StopSizing() end)
 grip:SetScript("OnUpdate", function()
     if Card.sizing and Card.TakeSize() then Card.Refresh(true) end
+end)
+-- The size comes from you and nothing else: while you drag, the text
+-- re-wraps to it at once; at any other time a size that isn't the saved
+-- one is put back.
+f:SetScript("OnSizeChanged", function()
+    if Card.sizing then
+        if Card.TakeSize() then Card.Refresh(true) end
+    elseif not Card.settingSize and Settings() and not Settings().cardCollapsed then
+        local w, h = f:GetWidth() or 0, f:GetHeight() or 0
+        if math.abs(w - Width()) >= 1 or math.abs(h - Height()) >= 1 then
+            Card.settingSize = true
+            f:SetSize(Width(), Height())
+            Card.settingSize = false
+        end
+    end
 end)
 grip:SetScript("OnEnter", function(self) Style.Tooltip(self, L("Drag to resize")) end)
 grip:SetScript("OnLeave", function() GameTooltip:Hide() end)
@@ -1469,7 +1487,9 @@ function Card.Refresh(force)
     local collapsed = s.cardCollapsed
     grip:SetShown(not s.lockFrames and not collapsed)
     if not Card.sizing then
+        Card.settingSize = true
         f:SetSize(Width(), collapsed and COLLAPSED_H or Height())
+        Card.settingSize = false
     end
 
     local guide = Engine.GetGuide()
@@ -1737,7 +1757,7 @@ local list
 
 function Card.BuildStepList()
     if list then return list end
-    list = CreateFrame("Frame", nil, f, "BackdropTemplate")
+    list = CreateFrame("Frame", nil, UIParent, "BackdropTemplate") -- the card clips its children
     Style.Backdrop(list, C.bg, C.border)
     list:SetFrameStrata("DIALOG")
     list:SetWidth(340)
@@ -1915,6 +1935,21 @@ end
 
 OXP.AddCommand("step", "print what OpenXP knows about the steps on screen (for bug reports)", function() Card.DebugStep() end)
 OXP.AddCommand("card", "hide or show the guide card", function() Card.Toggle() end)
+
+--- /oxp uidebug: the card's size against the saved size, and how tall its
+--- content is (to check in game that the card keeps its size).
+function Card.UIDebug()
+    local s = Settings()
+    local text = fmt("OpenXP %s card: %dx%d (scale %.2f), saved %sx%s, content %d in a %d view, %s%s%s",
+        tostring(OXP.version), math.floor((f:GetWidth() or 0) + 0.5), math.floor((f:GetHeight() or 0) + 0.5),
+        f:GetScale() or 1, tostring(s.cardWidth or "default " .. WIDTH), tostring(s.cardHeight or "default " .. HEIGHT),
+        math.floor((Card.contentHeight or 0) + 0.5), math.floor((Card.viewHeight or 0) + 0.5),
+        Card.overflow and "cut off (More)" or "fits", Card.expanded and ", More open" or "",
+        f.DoesClipChildren and (f:DoesClipChildren() and ", clips" or ", NOT clipping") or "")
+    OXP.Print(text)
+    return text
+end
+OXP.AddCommand("uidebug", "print the guide card's size, saved size and content height", function() Card.UIDebug() end)
 OXP.AddCommand("reset", "put the guide card and arrow back in their default spots", function()
     Card.ResetPosition()
     OXP.Arrow.ResetPosition()

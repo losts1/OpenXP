@@ -115,9 +115,24 @@ function Game:InstallGlobals()
         SetFontObject = function(self) self.fontSet = true end,
         GetText = function(self) return self.text end,
         SetFormattedText = function(self, f, ...) self.text = f:format(...) end,
-        SetSize = function(self, w, h) self.w, self.h = w, h end,
-        SetWidth = function(self, w) self.w, self.wSet = w, true end,
-        SetHeight = function(self, h) self.h = h end,
+        -- like the game: a frame whose size changes gets OnSizeChanged
+        SetSize = function(self, w, h)
+            local changed = w ~= self.w or h ~= self.h
+            self.w, self.h, self.wSet = w, h, true
+            if changed and self.scripts.OnSizeChanged then self.scripts.OnSizeChanged(self, w, h) end
+        end,
+        SetWidth = function(self, w)
+            local changed = w ~= self.w
+            self.w, self.wSet = w, true
+            if changed and self.scripts.OnSizeChanged then self.scripts.OnSizeChanged(self, w, self.h) end
+        end,
+        SetHeight = function(self, h)
+            local changed = h ~= self.h
+            self.h = h
+            if changed and self.scripts.OnSizeChanged then self.scripts.OnSizeChanged(self, self.w, h) end
+        end,
+        SetClipsChildren = function(self, v) self.clips = v and true or false end,
+        DoesClipChildren = function(self) return self.clips or false end,
         GetWidth = function(self) return self.w end,
         GetHeight = function(self) return self.h end,
         GetSize = function(self) return self.w, self.h end,

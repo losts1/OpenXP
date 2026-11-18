@@ -444,8 +444,18 @@ do
     C.Refresh(true)
     t.ok(C.expanded and C.view.scroll == C.maxScroll, "a redraw of the same step keeps it open and scrolled")
 
+    -- nothing else may change the card's size
+    f:SetHeight(900)
+    t.eq(f.h, h0, "a size from anywhere else is put back")
+    t.ok(f:DoesClipChildren(), "the card clips what's inside it")
+    local said = C.UIDebug()
+    t.ok(said:find("card: 330x300", 1, true) and said:find("cut off", 1, true), "/oxp uidebug: " .. said)
+
     -- drag the grip: the text re-wraps live, the card takes the new size
     C.StartSizing()
+    f:SetSize(400, 380) -- the game sizing the frame under the mouse
+    t.eq(C.blocks[1].title.w, 400 - 70, "the text re-wraps as the frame changes size")
+    t.eq(f.h, 380, "and the frame keeps the size you're dragging to")
     f.w, f.h = 520, 420
     C.grip.scripts.OnUpdate()
     t.eq(C.blocks[1].title.w, 520 - 70, "the text re-wraps while you drag")
