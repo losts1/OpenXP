@@ -29,7 +29,7 @@ local MAX_UPNEXT = 12
 local PAD = 12
 local MAX_BLOCKS = 4
 local MAX_LINES = 8
-local FADE = 0.2              -- seconds for the new-step fade and slide
+local FADE = 0.28             -- seconds for the new-step slide and fade
 
 local function Settings() return OXP.settings end
 local function Clamp(v, lo, hi) return math.max(lo, math.min(hi, v)) end
@@ -485,33 +485,71 @@ body:SetPoint("TOPLEFT", content, "TOPLEFT", 0, 0)
 body:SetPoint("TOPRIGHT", content, "TOPRIGHT", 0, 0)
 body:SetHeight(10)
 
--- a new step fades in and slides up a little (Settings: "Animate step changes")
-local anim = view:CreateAnimationGroup()
-Card.anim = anim
-local function Anim(kind, order, duration)
-    local a = anim:CreateAnimation(kind)
-    a:SetOrder(order)
-    a:SetDuration(duration)
-    return a
-end
-do
-    -- order 1 puts it 8 px down and hides it at once, order 2 brings it home
-    local hide = Anim("Alpha", 1, 0.001)
-    hide:SetFromAlpha(0)
-    hide:SetToAlpha(0)
-    Anim("Translation", 1, 0.001):SetOffset(0, -8)
-    local show = Anim("Alpha", 2, FADE)
-    show:SetFromAlpha(0)
-    show:SetToAlpha(1)
-    local slide = Anim("Translation", 2, FADE)
-    slide:SetOffset(0, 8)
-    if slide.SetSmoothing then slide:SetSmoothing("OUT") end
+-- A new step slides in and fades up (Settings: "Animate step changes"):
+-- from the right when you go forward, from the left when you go back, and
+-- the progress line glides to its new length. Driven by hand on an
+-- OnUpdate (an AnimationGroup on the scroll frame doesn't move what's
+-- inside it), so a redraw half-way through keeps the motion going.
+local SLIDE = 28              -- px the new step travels
+local tween = CreateFrame("Frame")
+Card.tween, Card.body = tween, body
+tween:Hide()
+tween.p, tween.dir = 1, 1
+
+local function Ease(p) return 1 - (1 - p) ^ 3 end -- fast, then settles
+
+--- Where the steps sit: below the history when it's open, sideways while
+--- the new step slides in.
+function Card.PlaceBody()
+    local x = tween:IsShown() and tween.dir * (1 - Ease(tween.p)) * SLIDE or 0
+    local above = Card.bodyBelow
+    body:ClearAllPoints()
+    if above then
+        body:SetPoint("TOPLEFT", above, "BOTTOMLEFT", x, 0)
+        body:SetPoint("TOPRIGHT", above, "BOTTOMRIGHT", x, 0)
+    else
+        body:SetPoint("TOPLEFT", content, "TOPLEFT", x, 0)
+        body:SetPoint("TOPRIGHT", content, "TOPRIGHT", x, 0)
+    end
 end
 
-function Card.PlayStepAnimation()
-    if Settings().cardAnimations == false then return false end
-    if anim:IsPlaying() then anim:Stop() end
-    anim:Play()
+--- The progress line's length; glides there while a step slides in.
+function Card.SetProgress(w)
+    tween.toW = w
+    if not tween:IsShown() then progress:SetWidth(w) end
+end
+
+local function ApplyTween()
+    local e = Ease(tween.p)
+    body:SetAlpha(e)
+    if Card.upNextFrame then Card.upNextFrame:SetAlpha(0.3 + 0.7 * e) end
+    if tween.fromW and tween.toW then
+        progress:SetWidth(math.max(1, tween.fromW + (tween.toW - tween.fromW) * e))
+    end
+    Card.PlaceBody()
+end
+
+tween:SetScript("OnUpdate", function(self, dt)
+    self.p = math.min(1, self.p + (dt or 0) / FADE)
+    if self.p >= 1 then self:Hide() end
+    ApplyTween()
+end)
+
+--- dir 1: the new step comes in from the right (forward), -1 from the left.
+function Card.PlayStepAnimation(dir)
+    if Settings().cardAnimations == false then
+        if tween:IsShown() then -- switched off mid-slide: finish it now
+            tween.p = 1
+            tween:Hide()
+            ApplyTween()
+        end
+        return false
+    end
+    tween.dir = dir or 1
+    tween.p = 0
+    tween.fromW = progress:GetWidth() or 1
+    tween:Show()
+    ApplyTween() -- hidden at once, so the new text never flashes in first
     return true
 end
 
@@ -978,6 +1016,7 @@ end)
 ---------------------------------------------------------------------------
 
 local upNext = CreateFrame("Frame", nil, f)
+Card.upNextFrame = upNext
 upNext.sep = upNext:CreateTexture(nil, "ARTWORK")
 upNext.sep:SetPoint("TOPLEFT", PAD, 0)
 upNext.sep:SetPoint("TOPRIGHT", -PAD, 0)
@@ -1314,7 +1353,7 @@ local function LayoutHeader(guide, current, total, detourStep, detourIndex)
         header.step:SetText(fmt("%d / %d", detourIndex, #Card.detour.ids))
         frac = detourIndex / math.max(#Card.detour.ids, 1)
     end
-    progress:SetWidth(math.max(1, (Width() - 2) * frac))
+    Card.SetProgress(math.max(1, (Width() - 2) * frac))
 end
 
 -- The blocks, one per step, top to bottom; returns their height.
@@ -1450,7 +1489,10 @@ function Card.Refresh(force)
     -- a new step on top: fade it in, close "More", back to the top
     local key = Card.StepKey(shown, detourStep, detourIndex)
     if key ~= Card.stepKey then
-        if Card.stepKey ~= nil and not Card.sizing then Card.PlayStepAnimation() end
+        if Card.stepKey ~= nil and not Card.sizing then
+            Card.PlayStepAnimation((current < (Card.keyPos or current)) and -1 or 1)
+        end
+        Card.keyPos = current
         Card.stepKey = key
         Card.expanded, Card.scroll = false, 0
     end
@@ -1463,14 +1505,8 @@ function Card.Refresh(force)
     content:SetWidth(Width() - 2)
     local okH, histH = Try(Card.LayoutHistory, current)
     histH = okH and histH or 0
-    body:ClearAllPoints()
-    if histH > 0 then
-        body:SetPoint("TOPLEFT", hist, "BOTTOMLEFT", 0, 0)
-        body:SetPoint("TOPRIGHT", hist, "BOTTOMRIGHT", 0, 0)
-    else
-        body:SetPoint("TOPLEFT", content, "TOPLEFT", 0, 0)
-        body:SetPoint("TOPRIGHT", content, "TOPRIGHT", 0, 0)
-    end
+    Card.bodyBelow = histH > 0 and hist or nil
+    Card.PlaceBody()
     local y = LayoutBlocks(shown)
     body:SetHeight(math.max(y, 1))
     local contentH = histH + y + 4

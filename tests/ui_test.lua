@@ -405,12 +405,29 @@ do
     local w0, h0 = f.w, f.h
     t.eq(h0, 300, "a fresh card has the default height")
     t.ok(not C.more.shown, "a short step fits: no More")
-    local played = 0
-    C.anim.Play = function() played = played + 1 end
+    local played, dirs = 0, {}
+    local realPlay = C.PlayStepAnimation
+    C.PlayStepAnimation = function(dir)
+        played = played + 1
+        dirs[#dirs + 1] = dir
+        return realPlay(dir)
+    end
     C.GoNext()
     t.eq(f.w, w0, "next step: same width")
     t.eq(f.h, h0, "next step: same height, so the buttons stay under the mouse")
-    t.eq(played, 1, "the new step fades in")
+    t.eq(played, 1, "the new step slides in")
+    t.eq(dirs[1], 1, "from the right, going forward")
+    local tw = C.tween
+    t.ok(tw.shown and C.body:GetAlpha() == 0, "hidden at once, so it never flashes in before the fade")
+    local x = C.body.points[1] and C.body.points[1][4]
+    t.ok(x and x > 0, "starts off to the right: " .. tostring(x))
+    tw.scripts.OnUpdate(tw, 0.1)
+    local a = C.body:GetAlpha()
+    t.ok(a > 0 and a < 1, "half-way: fading in (" .. a .. ")")
+    C.Refresh(true) -- a redraw mid-slide (the text is set again at 0.1 s) keeps the motion
+    t.ok(C.body.points[1][4] > 0 and C.body.points[1][4] < x, "a redraw doesn't snap it home")
+    tw.scripts.OnUpdate(tw, 1)
+    t.ok(not tw.shown and C.body:GetAlpha() == 1 and C.body.points[1][4] == 0, "and it settles in place")
     local title = C.blocks[1].title
     t.eq(title.w, w0 - 12 * 2 - 34 - 12, "the title wraps to the card's width")
     t.ok(title:GetStringHeight() > 14 * 3, "the long title takes several lines")
@@ -464,7 +481,13 @@ do
     OXP.settings.cardAnimations = false
     played = 0
     C.GoBack()
-    t.eq(played, 0, "Animate step changes off: no fade")
+    t.eq(played, 1, "going back asks for the slide")
+    t.ok(not C.tween.shown and C.body:GetAlpha() == 1, "Animate step changes off: no slide or fade")
+    OXP.settings.cardAnimations = true
+    C.GoNext()
+    C.GoBack()
+    t.eq(dirs[#dirs], -1, "going back: from the left")
+    C.tween.scripts.OnUpdate(C.tween, 1)
     OXP.settings.cardAnimations = true
     t.eq(#game.errors, 0, "no Lua errors: " .. table.concat(game.errors, " | "))
     t.ok(not C.lastError, "no card errors: " .. tostring(C.lastError))

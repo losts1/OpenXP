@@ -128,6 +128,8 @@ function Game:InstallGlobals()
             local plain = tostring(self.text or ""):gsub("|c%x%x%x%x%x%x%x%x", ""):gsub("|r", "")
             return 14 * math.max(1, math.ceil(#plain * 6 / self.w))
         end,
+        SetAlpha = function(self, a) self.alpha = a end,
+        GetAlpha = function(self) return self.alpha or 1 end,
         SetWordWrap = function(self, v) self.wrap = v and true or false end,
         SetVerticalScroll = function(self, v) self.scroll = v end,
         GetVerticalScroll = function(self) return self.scroll or 0 end,

@@ -93,7 +93,7 @@ local function Build()
     y = Section(content, L("Guide card"), y)
     y = Check(content, "cardShown", L("Show the guide card"), nil, y)
     y = Check(content, "lockFrames", L("Lock the card and arrow in place"), nil, y)
-    y = Check(content, "cardAnimations", L("Animate step changes"), L("A short fade when the card moves to a new step."), y)
+    y = Check(content, "cardAnimations", L("Animate step changes"), L("The new step slides in and fades up when you move to it."), y)
     local sizes = {}
     for i = 9, 20 do sizes[#sizes + 1] = i end
     y = Stepper(content, L("Text size"), y, sizes, function() return S().fontSize end,
