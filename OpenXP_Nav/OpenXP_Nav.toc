@@ -1,0 +1,59 @@
+## Interface: 11509, 16001
+## Title: OpenXP Navigation
+## Notes: Walking paths, floors and zone graphs for OpenXP's arrow (made by SoupEngine and SoupNav)
+## Author: OpenXP contributors
+## Dependencies: OpenXP
+## LoadOnDemand: 1
+
+Init.lua
+Unpack.lua
+Graphs\alterac_mountains.lua
+Graphs\arathi_highlands.lua
+Graphs\ashenvale.lua
+Graphs\azshara.lua
+Graphs\badlands.lua
+Graphs\blasted_lands.lua
+Graphs\burning_steppes.lua
+Graphs\darkshore.lua
+Graphs\darnassus.lua
+Graphs\deadwind_pass.lua
+Graphs\desolace.lua
+Graphs\dun_morogh.lua
+Graphs\durotar.lua
+Graphs\duskwood.lua
+Graphs\dustwallow_marsh.lua
+Graphs\eastern_plaguelands.lua
+Graphs\elwynn_forest.lua
+Graphs\felwood.lua
+Graphs\feralas.lua
+Graphs\hillsbrad_foothills.lua
+Graphs\ironforge.lua
+Graphs\loch_modan.lua
+Graphs\moonglade.lua
+Graphs\mulgore.lua
+Graphs\orgrimmar.lua
+Graphs\redridge_mountains.lua
+Graphs\riverglades.lua
+Graphs\searing_gorge.lua
+Graphs\silithus.lua
+Graphs\silverpine_forest.lua
+Graphs\stonetalon_mountains.lua
+Graphs\stormwind_city.lua
+Graphs\stranglethorn_vale.lua
+Graphs\swamp_of_sorrows.lua
+Graphs\tanaris.lua
+Graphs\teldrassil.lua
+Graphs\the_barrens.lua
+Graphs\the_hinterlands.lua
+Graphs\thousand_needles.lua
+Graphs\thunder_bluff.lua
+Graphs\tirisfal_glades.lua
+Graphs\un_goro_crater.lua
+Graphs\undercity.lua
+Graphs\western_plaguelands.lua
+Graphs\westfall.lua
+Graphs\wetlands.lua
+Graphs\winterspring.lua
+Graphs\zephras_isle.lua
+Paths-Alliance.lua
+Paths-Horde.lua
