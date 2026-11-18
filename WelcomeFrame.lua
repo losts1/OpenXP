@@ -15,6 +15,13 @@ local function L(s) return addon.locale and addon.locale.Get and addon.locale.Ge
 -- Newest first. Each entry: version, date, list of changes.
 local CHANGELOG = {
     {
+        version = "1.3.66",
+        date = "November 2026",
+        changes = {
+            "Fixed item tooltips (bags, gear, links) disappearing after a second or two while the guide was showing an NPC the game hadn't loaded yet",
+        },
+    },
+    {
         version = "1.3.65",
         date = "November 2026",
         changes = {
