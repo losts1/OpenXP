@@ -399,4 +399,49 @@ do
     t.eq(#game.errors, 0, "no Lua errors: " .. table.concat(game.errors, " | "))
 end
 
+------------------------------------------------------------------------
+print("-- baked walks from OpenXP_Nav: the arrow follows their corners")
+do
+    local game, OXP = newGame({ level = 22, map = 1453, x = 20, y = 50 })
+    local WP = OXP.WalkPaths
+    t.ok(not WP.IsLoaded(), "no OpenXP_Nav installed: no baked walks")
+    local g = addGuide(OXP, {
+        { { "goto", zone = "Stormwind City", x = 60, y = 50 }, { "accept", quest = 500 } },
+    }, "Walk test")
+    OXP.Engine.Load(g.key)
+    local target = OXP.Target.Update()
+    local zx, zy = OXP.Places.ToZone(target.wx, target.wy, 1453)
+    t.ok(math.abs(zx - 60) < 0.01, "without it the arrow points at the spot")
+    -- a walk from 20,50 around something: up to 20,30, across to 60,30, down to the spot
+    WP.Use({ paths = {
+        ["1453:20.00,50.00>1453:60.00,50.00"] = { 20, 50, 0, 0, 20, 30, 0, 0, 60, 30, 0, 0, 60, 50, 0, 0 },
+        ["1453:90.00,90.00>1453:60.00,50.00"] = { 90, 90, 0, 0, 60, 50, 0, 0 },
+    }, spots = { ["1453:60.00,50.00"] = { 12.5, 1 } } })
+    t.eq(WP.legs, 2, "two walks indexed")
+    local function aimAt()
+        game.now = game.now + 1
+        local a = OXP.Target.Update()
+        return OXP.Places.ToZone(a.wx, a.wy, 1453)
+    end
+    zx, zy = aimAt()
+    t.ok(math.abs(zx - 20) < 0.01 and math.abs(zy - 30) < 0.01, "at the start: the first corner (" .. zx .. "," .. zy .. ")")
+    t.eq(OXP.Target.Current().real.x, 60, "the real target is still the guide's spot")
+    game:MoveTo(1453, 20.2, 30.3)
+    zx, zy = aimAt()
+    t.ok(math.abs(zx - 60) < 0.01 and math.abs(zy - 30) < 0.01, "corner reached: the next one (" .. zx .. "," .. zy .. ")")
+    game:MoveTo(1453, 40, 31)
+    zx, zy = aimAt()
+    t.ok(math.abs(zx - 60) < 0.01 and math.abs(zy - 30) < 0.01, "halfway along: still that corner")
+    game:MoveTo(1453, 60, 40)
+    zx, zy = aimAt()
+    t.ok(math.abs(zx - 60) < 0.01 and math.abs(zy - 50) < 0.01, "on the last stretch: the spot itself")
+    game:MoveTo(1453, 40, 80)
+    zx, zy = aimAt()
+    t.ok(math.abs(zx - 60) < 0.01 and math.abs(zy - 50) < 0.01, "far from every walk: straight at the spot")
+    local z, indoor = WP.Floor(1453, 60, 50)
+    t.ok(z == 12.5 and indoor, "the spot's floor")
+    WP.Use(nil)
+    t.eq(#game.errors, 0, "no Lua errors: " .. table.concat(game.errors, " | "))
+end
+
 return t.fails

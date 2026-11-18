@@ -53,6 +53,7 @@ Nav\Terrain.lua
 Nav\Areas.lua
 Nav\Travel.lua
 Nav\PathHints.lua
+Nav\WalkPaths.lua
 Nav\Target.lua
 Nav\Arrow.lua
 Nav\MapDraw.lua
