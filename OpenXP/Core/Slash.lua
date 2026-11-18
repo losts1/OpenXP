@@ -9,6 +9,12 @@ function OXP.AddCommand(word, help, fn)
     commands[word] = { help = help, fn = fn }
 end
 
+function OXP.RemoveCommand(word)
+    if not commands[word] then return end
+    commands[word] = nil
+    for i = #order, 1, -1 do if order[i] == word then table.remove(order, i) end end
+end
+
 function OXP.RunCommand(msg)
     msg = OXP.Util.Trim(msg or "")
     local word, rest = msg:match("^(%S*)%s*(.-)$")

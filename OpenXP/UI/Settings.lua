@@ -227,11 +227,16 @@ local PAGES = {
         Toggle(p, "smartStartOnLogin", L("Move me to the right section at log in"),
             L("When you log in far past the step you're on, the guide jumps to where you are."))
     end },
-    { key = "arrow", title = L("Arrow and travel"), sub = L("The arrow and the trips it plans"), build = function(p)
+    -- SoupEngine test build (Nav/Target.lua BAKED_ONLY): the arrow and the
+    -- route line only follow SoupEngine's baked walks, so the trip and route
+    -- style settings are hidden.
+    { key = "arrow", title = OXP.Target.BAKED_ONLY and L("Arrow") or L("Arrow and travel"),
+        sub = OXP.Target.BAKED_ONLY and L("The arrow and how it looks") or L("The arrow and the trips it plans"), build = function(p)
         Heading(p, L("Arrow"))
         Toggle(p, "arrowShown", L("Show the arrow"), L("Points at the step's next spot."))
         Slider(p, "arrowScale", L("Arrow size"), nil, 0.7, 1.5, 0.05, Pct)
         Slider(p, "arrowText", L("Arrow text size"), nil, 9, 20, 1, function(v) return tostring(v) end)
+        if OXP.Target.BAKED_ONLY then return end
         Heading(p, L("Travel"))
         Dropdown(p, "routeStyle", L("Route"), L("Follow roads keeps you off cliffs and out of mob camps."),
             { { "roads", L("Follow roads") }, { "direct", L("Shortest way") } }, "roads", function() OXP.Terrain.Reset() end)
@@ -240,7 +245,7 @@ local PAGES = {
     end },
     { key = "maps", title = L("Maps"), sub = L("What the world map and minimap show"), build = function(p)
         Heading(p, L("World map and minimap"))
-        Toggle(p, "mapRoute", L("Route line"), L("The way to the step's spots."))
+        Toggle(p, "mapRoute", L("Route line"), OXP.Target.BAKED_ONLY and L("SoupEngine's walk to the step's spots.") or L("The way to the step's spots."))
         Toggle(p, "mapAreas", L("Kill and loot areas"), L("Needs Questie for steps that don't name their own area."))
         Toggle(p, "mapPins", L("Step pins and area labels"), L("! where you pick a quest up, ? where you hand one in."))
         Toggle(p, "mapMobs", L("Mob icons"), L("Skull: kill it. Bag: it drops what you need. Big skull: a rare spawn."))

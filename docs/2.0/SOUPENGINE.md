@@ -12,9 +12,10 @@ for it, and what is still open.
 
 ## What changed in this repo
 
-Branch `soupengine-test`, made from `68049d0` ("Clean slate: keep only what
-OpenXP 2.0 uses", the newest 2.0 code, same as `origin/polestar-guides`).
-Not pushed. The 2.0 branches themselves are untouched.
+Made on branch `soupengine-test` from `68049d0` ("Clean slate: keep only what
+OpenXP 2.0 uses") and merged into `polestar-guides` (2.0) on 2026-11-18, after
+the UI overhaul. Since then 2.0 uses SoupEngine for all of its navigation:
+see "SoupEngine walks only" below.
 
 - `Nav/WalkPaths.lua` (new, listed in `OpenXP.toc` after `Nav\PathHints.lua`):
   loads the optional OpenXP_Nav add-on at login if it's installed and
@@ -81,8 +82,10 @@ Checked on 2026-11-17: both factions' files (from the seed route, so the same
 steps as PoleStar's) loaded with no registry problems, and the play-through
 finished every guide for all 90 race/class combos in the test group, 0 failures.
 
-The generated guide files are not committed: they're ~2 MB per faction and,
-until SoupEngine has an optimized route, the same steps as the default.
+Since 2026-11-18 (Matt's call) both factions' `SoupEngine-Test-PoleStar-01-60.lua`
+files and their `Guides.xml` lines are committed on 2.0, as is `OpenXP_Nav/`
+(SoupEngine's export from 2026-11-17 23:56, `Graphs-*.json` included). Until
+SoupEngine has an optimized route they're the same steps as the default.
 
 ## OpenXP_Nav (walking paths)
 
@@ -121,31 +124,46 @@ The packed strings could look like hidden code to a reviewer, so README.txt
 says what they are and `Unpack.lua` stays plain Lua. If an add-on site
 objects anyway, the fallback is shipping only the paths and floors (~2.6 MB).
 
-### How the arrow uses it
+### SoupEngine walks only (2.0, since 2026-11-18)
 
-`WalkPaths.ForArrow(aim)` looks up every baked leg that ends at the guide
-spot the arrow is aiming at, finds the one passing nearest the player, and
-points at the next corner ahead (corners within 8 yards count as passed).
-It gives up, and the arrow behaves as before, when:
+Decided by Matt: SoupEngine is the new way, and the arrow and the map lines
+use nothing else. One switch, `BAKED_ONLY` near the top of `Nav/Target.lua`,
+turns this on (`false` gives back the old arrow, trips and terrain ways).
 
-- the player is more than 40 yards from every baked leg to that spot,
-- the next corner is the spot itself,
-- the aim isn't a guide spot (another zone's trip, a kill area, a chain
-  walk, `/oxp path to`).
+- **Arrow** (`Target.Update`): the guide's spot (or the card's chain walk),
+  followed along a walk from `WalkPaths.ForArrow`; with no walk, straight at
+  the spot. No trips between zones (`Nav/Travel.lua`), kill-area edges, path
+  hints or terrain stepping stones.
+- **Walks** (`Nav/WalkPaths.lua`): SoupEngine's baked legs that end on the
+  spot, the one passing nearest you. Within 40 yards: the next corner ahead
+  (corners within 8 yards count as passed). Further off: the nearest point
+  on the walk, to lead you back.
+- **SoupNav's zone graphs** (`Nav/WalkGraph.lua`, new): when nothing is baked
+  to the spot (the first spot in a new zone, the gap SoupEngine leaves at
+  zone borders) or you're more than 40 yards off every baked walk, A* on the
+  zone's graph from `OpenXP_Nav/Graphs` (`NAV.packed` + `NAV.Unpack`) from
+  where you stand to the spot, simplified to corners 3 yards off a straight
+  line, kept while you stay on it and worked out again (at most once a
+  second) when you leave it. Graph nodes are world yards; SoupNav's
+  `data/frames.json` frames (copied into `WalkGraph.lua`) turn them into map %.
+  A few ms per walk, even in the Barrens.
+- **Route line** (`Nav/MapDraw.lua`, world map and minimap): you, along the
+  walk to the first stop, then the baked walk (or a graph walk) between each
+  pair of the next few stops. Where there's no walk the line stops: no
+  straight lines and no terrain pathing.
+- **Removed** while it's on: `/oxp path`, `/oxp wall`, and the "Plan trips to
+  other zones" and "Route style" settings. New: `/oxp nav` says whether
+  OpenXP_Nav loaded and what walk the arrow has to this step's spot.
 
-Baked walks win over path hints and terrain ways, in both route styles.
-Checked against the real Alliance export in the headless client: standing on
-each Elwynn 1-11 spot, the arrow got a corner toward the next one 137 times
-out of 344; the rest were straight walks, repeat spots or walks baked from
-somewhere else, which fall back to the old arrow. No Lua errors.
+Checked in the headless client with the real Alliance export and Elwynn's
+graph: standing on each Elwynn 1-11 spot facing the next one, 80 of 82 got a
+route line and 73 an arrow corner, no Lua errors. Still missing: walks between
+zones (the arrow points straight until you're in the step's zone).
 
 ### Ideas for later (not approved, not built)
 
-- Off the path (after dying, or wandering off): lead back to the nearest
-  point on the baked walk, or route on the zone graphs (`NAV.packed` +
-  `NAV.Unpack`), which ship but aren't used yet.
+- Walks between zones (SoupNav's meshes stop at zone edges).
 - Bake walks from graveyards to the guide spots.
-- A light waypoint web between spots, for walks the route never takes.
 - Floors: tell the player a spot is in a cave or upstairs.
 
 ## Known issues (SoupNav side, not fixed here)

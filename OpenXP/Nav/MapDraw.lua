@@ -264,7 +264,8 @@ function Draw.Upcoming()
     -- The first stop is always where the arrow points (its real target:
     -- the shown step's current waypoint, a chain walk or /oxp path to), so
     -- the line and the arrow never lead to different places.
-    local aim = OXP.Target.Real and (OXP.PathHints.go or OXP.Target.override or OXP.Target.Real())
+    local hint = not OXP.Target.BAKED_ONLY and OXP.PathHints.go
+    local aim = OXP.Target.Real and (hint or OXP.Target.override or OXP.Target.Real())
     local startAt = first
     if aim and aim.none then return out end -- chain walk with no spot: no line either
     if aim and aim.wx then
@@ -275,7 +276,7 @@ function Draw.Upcoming()
             out[1] = { map, x, y, aim.step and Areas.ForStep(aim.step) or nil }
             -- an "as you go" step behind you: the current step still follows
             startAt = (aim.pos and aim.pos >= first) and aim.pos + 1 or first
-            if OXP.PathHints.go or OXP.Target.override then return out end
+            if hint or OXP.Target.override then return out end
         end
     end
     local willHave = {}
@@ -297,7 +298,32 @@ end
 -- Map points (0-100) of the route on `map` from (px, py), or {}. Legs between
 -- steps are worked out once; the leg from you follows you.
 local legCache = {}
+
+-- SoupEngine test build (Nav/Target.lua BAKED_ONLY): the line follows only
+-- SoupEngine's baked walks (Nav/WalkPaths.lua): from you along the walk to
+-- the first stop, then the baked walk between each pair of stops. Where
+-- nothing is baked it stops (no straight lines, no terrain pathing).
+local function BakedPoints(map, px, py, stops)
+    local WP = OXP.WalkPaths
+    local first = stops[1]
+    if not (first and first[1] == map) then return {} end
+    local wx, wy, inst = Places.Player()
+    local pts = { { px, py } }
+    local ahead = WP.RouteFrom({ map = first[1], x = first[2], y = first[3] }, wx, wy, inst)
+    if not ahead then return {} end
+    for _, p in ipairs(ahead) do pts[#pts + 1] = p end
+    for k = 2, #stops do
+        local a, b = stops[k - 1], stops[k]
+        if b[1] ~= map then break end
+        local leg = WP.Between(map, a[2], a[3], b[2], b[3])
+        if not leg then break end
+        for _, p in ipairs(leg) do pts[#pts + 1] = p end
+    end
+    return pts
+end
+
 local function RoutePoints(map, px, py, stops, level)
+    if OXP.Target.BAKED_ONLY then return BakedPoints(map, px, py, stops) end
     if not Terrain.Grid(map) then return {} end -- a city: leave it to the arrow
     local key = map .. ":" .. floor(px * 4) .. ":" .. floor(py * 4) .. ":" .. level .. ":" .. Terrain.Style()
     for _, s in ipairs(stops) do key = key .. ":" .. s[1] .. "/" .. floor(s[2] * 10) .. "/" .. floor(s[3] * 10) end

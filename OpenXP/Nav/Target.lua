@@ -17,6 +17,18 @@ local Places, Engine = OXP.Places, OXP.Engine
 
 local REACHED = 12 -- yards: a waypoint of a step with several is passed
 
+-- SoupEngine test build: the arrow only follows SoupEngine's baked walks
+-- (Nav/WalkPaths.lua) and otherwise points straight at the step's spot. No
+-- trips, kill areas, path hints or terrain stepping stones. Set to false
+-- for the old arrow.
+local BAKED_ONLY = true
+Target.BAKED_ONLY = BAKED_ONLY
+if BAKED_ONLY then
+    -- the old arrow's own paths: /oxp path and /oxp wall do nothing here
+    OXP.RemoveCommand("path")
+    OXP.RemoveCommand("wall")
+end
+
 -- Title for a step's spot: while one of several objectives is left, what
 -- to do for it ("Kill Gobbler for Gobbler's Head"); else the step's first
 -- text goal, else its first goal with text.
@@ -97,6 +109,16 @@ function Target.Current() return current end
 
 --- Work the arrow's point out again. Returns it (or nil).
 function Target.Update()
+    if BAKED_ONLY then
+        local base = Target.override or Target.Real()
+        if not base or base.none then
+            current = nil
+            return nil
+        end
+        current = OXP.WalkPaths.ForArrow(base) or base
+        current.real = base
+        return current
+    end
     local hint = OXP.PathHints.go
     local base = hint or Target.override or Target.Real()
     -- a chain walk with no spot for its quest: no arrow, rather than the

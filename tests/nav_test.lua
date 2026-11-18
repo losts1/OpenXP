@@ -173,10 +173,16 @@ do
     t.ok(saved.areas[1] and #saved.areas[1].entrances >= 1, "with its entrance")
 
     -- /oxp path to a zone
-    OXP.RunCommand("path to Stonetalon Mountains")
-    t.ok(PH.go and PH.go.untilMap == 1442, "arrow led to Stonetalon")
-    OXP.RunCommand("path stop")
-    t.ok(PH.go == nil, "and back on the guide")
+    if OXP.Target.BAKED_ONLY then
+        -- SoupEngine walks only: /oxp path is gone
+        OXP.RunCommand("path to Stonetalon Mountains")
+        t.ok(PH.go == nil, "no /oxp path to with SoupEngine walks only")
+    else
+        OXP.RunCommand("path to Stonetalon Mountains")
+        t.ok(PH.go and PH.go.untilMap == 1442, "arrow led to Stonetalon")
+        OXP.RunCommand("path stop")
+        t.ok(PH.go == nil, "and back on the guide")
+    end
     local _ = game
 end
 
@@ -263,7 +269,11 @@ do
     t.ok(#up >= 1 and up[1][1] == 1453, "route stops from the shown steps")
     t.eq(#OXP.MapDraw.RoutePoints(1453, 40, 50, up, 22), 0, "no route line in a city (no terrain)")
     local pts = OXP.MapDraw.RoutePoints(1431, 40, 50, { { 1431, 60, 60 } }, 22)
-    t.ok(#pts >= 2, "route points in Duskwood")
+    if OXP.Target.BAKED_ONLY then
+        t.eq(#pts, 0, "no SoupEngine walk loaded: no route line (no terrain pathing)")
+    else
+        t.ok(#pts >= 2, "route points in Duskwood")
+    end
     t.eq(#game.errors, 0, "no Lua errors: " .. table.concat(game.errors, " | "))
 
     -- the route line's first stop is always where the arrow points
@@ -437,10 +447,62 @@ do
     t.ok(math.abs(zx - 60) < 0.01 and math.abs(zy - 50) < 0.01, "on the last stretch: the spot itself")
     game:MoveTo(1453, 40, 80)
     zx, zy = aimAt()
-    t.ok(math.abs(zx - 60) < 0.01 and math.abs(zy - 50) < 0.01, "far from every walk: straight at the spot")
+    if OXP.Target.BAKED_ONLY then
+        -- 40,80 is nearest the walk from 90,90: the arrow leads back onto it
+        -- (in the fake world the point is (52.0, 76.0)% along 90,90 > 60,50)
+        local onLeg = math.abs((zy - 90) - (zx - 90) * 4 / 3) < 0.05 and zx > 60 and zx < 90
+        t.ok(onLeg and math.abs(zx - 60) > 1, "off every walk: back to the nearest point on one (" .. zx .. "," .. zy .. ")")
+    else
+        t.ok(math.abs(zx - 60) < 0.01 and math.abs(zy - 50) < 0.01, "far from every walk: straight at the spot")
+    end
+    if OXP.Target.BAKED_ONLY then
+        -- the route line follows the same baked walks, and nothing else
+        game:MoveTo(1453, 20, 50)
+        local pts = OXP.MapDraw.RoutePoints(1453, 20, 50, { { 1453, 60, 50 }, { 1453, 90, 90 } }, 22)
+        local want = { { 20, 50 }, { 20, 30 }, { 60, 30 }, { 60, 50 } }
+        local same = #pts == #want
+        for i, p in ipairs(want) do
+            same = same and pts[i] and math.abs(pts[i][1] - p[1]) < 0.01 and math.abs(pts[i][2] - p[2]) < 0.01
+        end
+        t.ok(same, "route line: you, the walk's corners, the spot (" .. #pts .. " points)")
+        local between = WP.Between(1453, 90, 90, 60, 50)
+        t.ok(between and #between == 1 and between[1][1] == 60, "a baked walk between two spots")
+        game:MoveTo(1453, 40, 80)
+        local back = OXP.MapDraw.RoutePoints(1453, 40, 80, { { 1453, 60, 50 } }, 22)
+        t.ok(#back == 3 and back[3][1] == 60 and back[3][2] == 50, "off every walk: you, back onto the walk, the spot")
+        t.eq(#OXP.MapDraw.RoutePoints(1453, 20, 50, { { 1453, 33, 33 } }, 22), 0, "nothing baked to the spot: no route line")
+    end
     local z, indoor = WP.Floor(1453, 60, 50)
     t.ok(z == 12.5 and indoor, "the spot's floor")
     WP.Use(nil)
+    t.eq(#game.errors, 0, "no Lua errors: " .. table.concat(game.errors, " | "))
+end
+
+print("-- SoupNav's zone graphs (OpenXP_Nav): walks SoupEngine didn't bake")
+if io.open(ROOT .. "/OpenXP_Nav/Graphs/stonetalon_mountains.lua") then
+    local game, OXP = newGame({ level = 23 })
+    local NAV = { packed = {}, paths = {}, spots = {} }
+    assert(loadfile(ROOT .. "/OpenXP_Nav/Unpack.lua"))("OpenXP_Nav", NAV)
+    assert(loadfile(ROOT .. "/OpenXP_Nav/Graphs/stonetalon_mountains.lua"))("OpenXP_Nav", NAV)
+    local G = OXP.WalkGraph
+    -- out of the Talondeep Path tunnel down to Windshear Crag
+    local pts = G.Route(NAV, 1442, 80.4, 33.7, 76.5, 45.5)
+    t.ok(pts and #pts > 3, "a way from the tunnel to Windshear Crag")
+    if pts then
+        t.ok(pts[1][1] == 80.4 and pts[#pts][1] == 76.5 and pts[#pts][2] == 45.5, "from you, ending on the spot")
+    end
+    t.ok(G.Route(NAV, 1429, 40, 60, 42, 66) == nil, "no graph for the zone: no way")
+    -- the arrow and the route line use it when nothing is baked to the spot
+    OXP.WalkPaths.Use(NAV)
+    local g = addGuide(OXP, { { { "goto", zone = "Stonetalon Mountains", x = 76.5, y = 45.5 }, { "accept", quest = 500 } } }, "Graph test")
+    OXP.Engine.Load(g.key)
+    game:MoveTo(1442, 80.4, 33.7)
+    game.now = game.now + 1
+    local a = OXP.Target.Update()
+    t.ok(a and a.walkPath, "the arrow follows the graph walk")
+    local line = OXP.MapDraw.RoutePoints(1442, 80.4, 33.7, { { 1442, 76.5, 45.5 } }, 23)
+    t.ok(#line > 3 and line[#line][1] == 76.5, "so does the route line (" .. #line .. " points)")
+    OXP.WalkPaths.Use(nil)
     t.eq(#game.errors, 0, "no Lua errors: " .. table.concat(game.errors, " | "))
 end
 

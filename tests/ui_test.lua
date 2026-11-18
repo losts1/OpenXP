@@ -189,7 +189,11 @@ do
     local aim = OXP.Target.Update()
     t.ok(aim ~= nil, "the arrow has somewhere to go")
     t.ok(aim and aim.real == first, "on the way to the chain's quest")
-    t.ok(aim and (aim.travel or aim.map == 1437), "a trip is planned to Darnassus: " .. tostring(aim and aim.title))
+    if OXP.Target.BAKED_ONLY then
+        t.ok(aim and not aim.travel, "SoupEngine walks only: no trip planned, straight at the quest")
+    else
+        t.ok(aim and (aim.travel or aim.map == 1437), "a trip is planned to Darnassus: " .. tostring(aim and aim.title))
+    end
     -- the next quest of the chain has no spot in the data
     game:Accept(701, 0)
     game:TurnIn(701)
@@ -382,7 +386,9 @@ do
     OXP.RunCommand("perf show")
     print = oldPrint
     local all = table.concat(printed, "\n")
-    for _, word in ipairs({ "where", "catchup", "path", "perf", "arrow", "card", "settings", "feedback", "menu", "step" }) do
+    local words = { "where", "catchup", "path", "perf", "arrow", "card", "settings", "feedback", "menu", "step" }
+    if OXP.Target.BAKED_ONLY then words[3] = "nav" end -- /oxp path is gone; /oxp nav is new
+    for _, word in ipairs(words) do
         t.ok(all:find("/oxp " .. word, 1, true), "/oxp lists " .. word)
     end
     t.ok(all:find("guide: Test/", 1, true), "/oxp step prints the guide")

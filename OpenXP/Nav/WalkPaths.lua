@@ -18,7 +18,7 @@ local WP = {}
 OXP.WalkPaths = WP
 
 local Places = OXP.Places
-local fmt, sqrt, huge = string.format, math.sqrt, math.huge
+local fmt, sqrt, huge, floor = string.format, math.sqrt, math.huge, math.floor
 
 local NEAR = 40       -- yards: further than this from every baked walk, the arrow doesn't use them
 local REACH = 8       -- yards: a corner this close is passed
@@ -60,6 +60,7 @@ function WP.Use(data)
     else
         nav, byEnd, WP.legs = nil, {}, 0
     end
+    if OXP.WalkGraph then OXP.WalkGraph.Reset() end
     WP.Reset()
 end
 
@@ -99,7 +100,7 @@ local function Corners(leg)
     return leg
 end
 
--- Distance from (px, py) to the segment a-b, and how far along it (0-1).
+-- Distance from (px, py) to the segment a-b, and the nearest point on it.
 local function SegDist(px, py, ax, ay, bx, by)
     local dx, dy = bx - ax, by - ay
     local len2 = dx * dx + dy * dy
@@ -109,38 +110,142 @@ local function SegDist(px, py, ax, ay, bx, by)
         if f < 0 then f = 0 elseif f > 1 then f = 1 end
     end
     local cx, cy = ax + f * dx, ay + f * dy
-    return sqrt((px - cx) ^ 2 + (py - cy) ^ 2), f
+    return sqrt((px - cx) ^ 2 + (py - cy) ^ 2), cx, cy
 end
 
---- The next corner on the baked walk to `target` for a player at px, py:
---- wx, wy (or nil when there is no baked walk near the player, or the spot
---- itself is next).
-function WP.NextCorner(target, px, py, inst)
-    if not (target and target.map and target.x and target.y and px) then return nil end
-    local legs = byEnd[SpotKey(target.map, target.x, target.y)]
-    if not legs then return nil end
-    local best, bestSeg, bestD = nil, nil, huge
-    for _, leg in ipairs(legs) do
+-- Of `legs`, the one passing nearest (px, py): leg, segment, distance and
+-- the nearest point on it (world).
+local function Nearest(legs, px, py, inst)
+    local best, bestSeg, bestD, bx, by = nil, nil, huge, nil, nil
+    for _, leg in ipairs(legs or {}) do
         local c = Corners(leg)
         if c and c.instance == inst then
             for i = 1, #c.wx - 1 do
-                local d = SegDist(px, py, c.wx[i], c.wy[i], c.wx[i + 1], c.wy[i + 1])
-                if d < bestD then best, bestSeg, bestD = c, i, d end
+                local d, cx, cy = SegDist(px, py, c.wx[i], c.wy[i], c.wx[i + 1], c.wy[i + 1])
+                if d < bestD then best, bestSeg, bestD, bx, by = c, i, d, cx, cy end
             end
         end
     end
-    if not best or bestD > NEAR then return nil end
+    return best, bestSeg, bestD, bx, by
+end
+
+-- A walk worked out on SoupNav's zone graph (Nav/WalkGraph.lua) from the
+-- player to `target`, as a leg like the baked ones; kept while you stay on
+-- it, worked out again (at most once a second) when you leave it.
+local GRAPH_AGAIN = 1
+local graphLeg = { key = nil, leg = nil, at = -huge }
+
+local function FlatLeg(map, pts, key)
+    local flat = {}
+    for _, p in ipairs(pts) do
+        flat[#flat + 1], flat[#flat + 2], flat[#flat + 3], flat[#flat + 4] = p[1], p[2], 0, 0
+    end
+    if #flat < 8 then return nil end
+    return { map = map, key = key, flat = flat, graph = true }
+end
+
+local function GraphLeg(target, key, px, py, inst)
+    if not (nav and nav.packed and OXP.WalkGraph) then return nil end
+    local cached = graphLeg.key == key and graphLeg.leg
+    if cached then
+        local _, _, d = Nearest({ cached }, px, py, inst)
+        if d <= NEAR then return cached end
+    end
+    local now = GetTime and GetTime() or 0
+    if graphLeg.key == key and now - graphLeg.at < GRAPH_AGAIN then return cached or nil end
+    graphLeg.key, graphLeg.at, graphLeg.leg = key, now, nil
+    local zx, zy = Places.ToZone(px, py, target.map)
+    if not zx then return nil end
+    local pts = OXP.WalkGraph.Route(nav, target.map, zx, zy, target.x, target.y)
+    graphLeg.leg = pts and FlatLeg(target.map, pts, "graph>" .. key) or nil
+    return graphLeg.leg
+end
+
+-- The walk to `target` passing nearest (px, py): SoupEngine's baked walks
+-- first; when none is baked to the spot or you're more than NEAR yards off
+-- them, one worked out on SoupNav's graph from where you stand. Returns the
+-- leg, the index of the next corner ahead on it, the distance to the walk
+-- and the nearest point on it (world); nil when there's no walk at all.
+local function Ahead(target, px, py, inst)
+    if not (target and target.map and target.x and target.y and px) then return nil end
+    local key = SpotKey(target.map, target.x, target.y)
+    local best, bestSeg, bestD, bx, by = Nearest(byEnd[key], px, py, inst)
+    if not best or bestD > NEAR then
+        local gl = GraphLeg(target, key, px, py, inst)
+        if gl then
+            local b2, s2, d2, x2, y2 = Nearest({ gl }, px, py, inst)
+            if b2 and d2 < bestD then best, bestSeg, bestD, bx, by = b2, s2, d2, x2, y2 end
+        end
+    end
+    if not best then return nil end
     local n = #best.wx
     local j = bestSeg + 1
     while j < n and Places.Distance(px, py, best.wx[j], best.wy[j]) <= REACH do j = j + 1 end
-    if j >= n then return nil end   -- the last corner is the spot: the arrow's own target
+    return best, j, bestD, bx, by
+end
+
+--- Where the arrow should point on the baked walk to `target` for a player
+--- at px, py: wx, wy. Off the walk (more than NEAR yards): the nearest point
+--- on it, to lead you back. On it: the next corner ahead. nil when nothing is
+--- baked to the spot, or the spot itself is next.
+function WP.NextCorner(target, px, py, inst)
+    local best, j, d, bx, by = Ahead(target, px, py, inst)
+    if not best then return nil end
+    local n = #best.wx
+    if d > NEAR then
+        if Places.Distance(bx, by, best.wx[n], best.wy[n]) <= REACH then return nil end
+        return bx, by
+    end
+    if j >= n then return nil end -- the last corner is the spot: the arrow's own target
     return best.wx[j], best.wy[j]
+end
+
+--- For the map's route line: the points (map %, on target.map) from a
+--- player at world px, py along the baked walk to `target`, ending on the
+--- spot: first the nearest point on the walk when you're off it. nil when
+--- nothing is baked to the spot.
+function WP.RouteFrom(target, px, py, inst)
+    local best, j, d, bx, by = Ahead(target, px, py, inst)
+    if not best then return nil end
+    local out, flat = {}, best.flat
+    if d > REACH then
+        local x, y = Places.ToZone(bx, by, target.map)
+        if x then out[1] = { x, y } end
+    end
+    for k = j, #best.wx do out[#out + 1] = { flat[k * 4 - 3], flat[k * 4 - 2] } end
+    return out
+end
+
+--- The corners (map %) of the baked walk from one guide spot to the next on
+--- `map`, ending on b; nil when SoupEngine baked none.
+local between = {}   -- graph walks between spots, worked out once: [key] = pts or false
+
+function WP.Between(map, ax, ay, bx, by)
+    if not nav then return nil end
+    local key = SpotKey(map, ax, ay) .. ">" .. SpotKey(map, bx, by)
+    local flat = nav.paths[key]
+    local out = {}
+    if flat then
+        for i = 5, #flat - 3, 4 do out[#out + 1] = { flat[i], flat[i + 1] } end
+        return out
+    end
+    -- not baked: SoupNav's graph (Nav/WalkGraph.lua)
+    if between[key] == nil then
+        local pts = OXP.WalkGraph and nav.packed and OXP.WalkGraph.Route(nav, map, ax, ay, bx, by)
+        between[key] = pts or false
+    end
+    local pts = between[key]
+    if not pts then return nil end
+    for i = 2, #pts do out[#out + 1] = pts[i] end
+    return out
 end
 
 local proxy = {}
 local lastTarget, lastCheck, lastX, lastY, lastTX, lastTY = nil, -huge, nil, nil, nil, nil
 
 function WP.Reset()
+    graphLeg.key, graphLeg.leg, graphLeg.at = nil, nil, -huge
+    between = {}
     lastTarget, lastCheck, lastX, lastY, lastTX, lastTY = nil, -huge, nil, nil, nil, nil
 end
 
@@ -159,5 +264,27 @@ function WP.ForArrow(target)
     proxy.title, proxy.real, proxy.walkPath = target.title, target, true
     return proxy
 end
+
+--- /oxp nav: is OpenXP_Nav loaded, and is there a baked walk to the arrow's spot?
+function WP.Command()
+    if not nav then
+        OXP.Print("OpenXP_Nav isn't loaded: no SoupEngine walks. Check it's enabled in the AddOns list, then restart the game.")
+        return
+    end
+    OXP.Print(("OpenXP_Nav loaded: %d SoupEngine walks."):format(WP.legs or 0))
+    local real = OXP.Target.Real and OXP.Target.Real()
+    if not (real and real.x) then OXP.Print("No guide spot to walk to right now.") return end
+    local px, py, inst = Places.Player()
+    local best, _, d = Ahead(real, px, py, inst)
+    local key = SpotKey(real.map, real.x, real.y)
+    if not best then
+        OXP.Print(("No walk to this step's spot (%s): nothing baked and no graph way from here."):format(key))
+    else
+        OXP.Print(("Walk to this step's spot (%s): %s; you're %d yards from it%s."):format(key,
+            best.graph and "worked out on SoupNav's zone graph" or "SoupEngine's baked walk", floor(d + 0.5),
+            d > NEAR and " (the arrow leads you back onto it)" or ""))
+    end
+end
+OXP.AddCommand("nav", "SoupEngine walks: loaded? one to this step?", function() WP.Command() end)
 
 OXP.OnReady(function() WP.Load() end)
