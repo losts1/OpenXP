@@ -6,6 +6,7 @@
 --   a quest chain walk          the card's "Do the chain" (UI/Card.lua)
 --   another zone                the next leg of the trip (Nav/Travel.lua)
 --   a kill/loot area            "Here" inside it, else its edge (Nav/Areas.lua)
+--   a baked walk                corners of SoupEngine's walk (Nav/WalkPaths.lua, needs OpenXP_Nav)
 --   caves, ridges, mountains    stepping stones (Nav/PathHints.lua, Nav/Terrain.lua)
 local _, OXP = ...
 
@@ -74,6 +75,7 @@ function Target.Real()
             step.marks.waypoint = i
             local s = spots[i]
             real.wx, real.wy, real.instance, real.map = s.wx, s.wy, s.instance, s.map
+            real.x, real.y = s.x, s.y -- map %: finds the baked walk (Nav/WalkPaths.lua)
             real.title, real.step, real.pos = StepTitle(step), step, pos
             return real
         end
@@ -107,7 +109,8 @@ function Target.Update()
     local trav = not hint and OXP.Travel.ArrowTarget(base)
     local area = not hint and not trav and base.step and OXP.Areas.Target(base.step, base.title)
     local aim = trav or area or base
-    local via = not (area and area.inside) and OXP.PathHints.ForArrow(aim)
+    -- a baked walk to the spot (OpenXP_Nav) first, else path hints and terrain
+    local via = not (area and area.inside) and (OXP.WalkPaths.ForArrow(aim) or OXP.PathHints.ForArrow(aim))
     if via and trav then via.title = trav.title end
     current = via or aim
     current.real = base

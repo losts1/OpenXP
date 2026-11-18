@@ -115,41 +115,45 @@ for _, faction in ipairs({ "Alliance", "Horde" }) do
     for _, race in ipairs(RACES[faction]) do
         for _, class in ipairs(CLASSES) do
             local who = faction .. " " .. race .. " " .. class
-            -- Leveling chains: the default (PoleStar's 1-60), then our legacy 21-60.
-            for _, groupName in ipairs({ "OpenXP Leveling (" .. faction .. ")", "OpenXP Legacy (" .. faction .. ")" }) do
+            -- Leveling chains: the default (PoleStar's 1-60), then our legacy 21-60, then
+            -- SoupEngine's test group when its guide files are in Guides.xml (docs/2.0/SOUPENGINE.md).
+            local soupGroup = "SoupEngine Test (" .. faction .. ")"
+            for _, groupName in ipairs({ "OpenXP Leveling (" .. faction .. ")", "OpenXP Legacy (" .. faction .. ")", soupGroup }) do
             local who = who .. " [" .. groupName .. "]"
             local game = FakeWoW.New(ROOT, { faction = faction, race = race, class = class, level = 1 })
             local OXP = game:LoadAddon()
             game:Login()
             local objectives = objectiveCounts(OXP)
             local leveling = OXP.Registry.ForPlayer(nil, groupName)
-            local isNext = {}
-            for _, g in ipairs(leveling) do
-                if g.next then isNext[g.next] = true end
-            end
-            local first
-            for _, g in ipairs(leveling) do
-                if not isNext[g.name] then
-                    t.ok(not first, who .. ": two chain starts, " .. (first and first.name or "") .. " and " .. g.name)
-                    first = first or g
+            if #leveling > 0 or groupName ~= soupGroup then -- SoupEngine files not loaded: skip
+                local isNext = {}
+                for _, g in ipairs(leveling) do
+                    if g.next then isNext[g.next] = true end
                 end
+                local first
+                for _, g in ipairs(leveling) do
+                    if not isNext[g.name] then
+                        t.ok(not first, who .. ": two chain starts, " .. (first and first.name or "") .. " and " .. g.name)
+                        first = first or g
+                    end
+                end
+                local expected = {}
+                local g = first
+                while g and #expected <= #leveling do
+                    expected[#expected + 1] = g.name
+                    g = OXP.Registry.Next(g)
+                end
+                t.eq(#expected, #leveling, who .. ": guides in the #next chain vs leveling guides")
+                OXP.Engine.Load(first)
+                local played = playToEnd(game, OXP, objectives, who)
+                t.eq(table.concat(played, " > "), table.concat(expected, " > "), who .. ": guide order")
+                for _, name in ipairs(played) do
+                    local done, total = OXP.Engine.GetProgress(OXP.Registry.Find(name, first.group))
+                    t.ok(done == total, who .. ": " .. name .. " finished " .. done .. "/" .. total)
+                    stepsPlayed = stepsPlayed + total
+                end
+                t.eq(#game.errors, 0, who .. ": Lua errors: " .. table.concat(game.errors, " | "))
             end
-            local expected = {}
-            local g = first
-            while g and #expected <= #leveling do
-                expected[#expected + 1] = g.name
-                g = OXP.Registry.Next(g)
-            end
-            t.eq(#expected, #leveling, who .. ": guides in the #next chain vs leveling guides")
-            OXP.Engine.Load(first)
-            local played = playToEnd(game, OXP, objectives, who)
-            t.eq(table.concat(played, " > "), table.concat(expected, " > "), who .. ": guide order")
-            for _, name in ipairs(played) do
-                local done, total = OXP.Engine.GetProgress(OXP.Registry.Find(name, first.group))
-                t.ok(done == total, who .. ": " .. name .. " finished " .. done .. "/" .. total)
-                stepsPlayed = stepsPlayed + total
-            end
-            t.eq(#game.errors, 0, who .. ": Lua errors: " .. table.concat(game.errors, " | "))
             end
 
             -- Dungeons, each on its own.
