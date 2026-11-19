@@ -23,6 +23,7 @@ local fmt, sqrt, huge, floor = string.format, math.sqrt, math.huge, math.floor
 local NEAR = 40       -- yards: further than this from every baked walk, the arrow doesn't use them
 local REACH = 8       -- yards: a corner this close is passed
 local THROTTLE = 0.2  -- seconds between corner updates
+local TIE = 3         -- yards: see Nearest
 
 local nav             -- OpenXP_Nav's table, once loaded
 local byEnd = {}      -- ["map:x,y"] = { leg, ... }; leg = { map = n, key = s, flat = {...} }
@@ -33,8 +34,11 @@ local function SpotKey(map, x, y)
 end
 WP.SpotKey = SpotKey
 
+local byMap = {}       -- [map] = { leg, ... }: every leg, by the map of the spot it ends on
+local passing = {}     -- ["map:x,y"] = { leg, ... } or false: walks through a spot, cut there
+
 local function Index(data)
-    byEnd = {}
+    byEnd, byMap, passing = {}, {}, {}
     local legs = 0
     for key, flat in pairs(data.paths) do
         local to = key:match(">(.+)$")
@@ -45,7 +49,10 @@ local function Index(data)
                 list = {}
                 byEnd[to] = list
             end
-            list[#list + 1] = { map = map, key = key, flat = flat }
+            local leg = { map = map, key = key, flat = flat }
+            list[#list + 1] = leg
+            byMap[map] = byMap[map] or {}
+            byMap[map][#byMap[map] + 1] = leg
             legs = legs + 1
         end
     end
@@ -58,7 +65,7 @@ function WP.Use(data)
         nav = data
         Index(data)
     else
-        nav, byEnd, WP.legs = nil, {}, 0
+        nav, byEnd, byMap, passing, WP.legs = nil, {}, {}, {}, 0
     end
     if OXP.WalkGraph then OXP.WalkGraph.Reset() end
     WP.Reset()
@@ -122,11 +129,50 @@ local function Nearest(legs, px, py, inst)
         if c and c.instance == inst then
             for i = 1, #c.wx - 1 do
                 local d, cx, cy = SegDist(px, py, c.wx[i], c.wy[i], c.wx[i + 1], c.wy[i + 1])
-                if d < bestD then best, bestSeg, bestD, bx, by = c, i, d, cx, cy end
+                -- on a walk that comes back past itself, the later part wins a
+                -- near tie: you're on your way, not at the start again
+                if d < bestD or (c == best and d <= bestD + TIE) then
+                    best, bestSeg, bestD, bx, by = c, i, math.min(d, bestD), cx, cy
+                end
             end
         end
     end
     return best, bestSeg, bestD, bx, by
+end
+
+-- Walks to a spot. SoupEngine keys each walk by the guide spot it ends on
+-- (corners in that spot's map %, below 0 or above 100 where the walk is
+-- still in the zone before, e.g. through a tunnel from the next zone). A spot
+-- some walk only passes through on its way on (a "reach" waypoint like the
+-- Talondeep Path's exit) gets that walk cut where it passes nearest the spot.
+local PASS = 30 -- yards: a walk this close to a spot passes through it
+
+local function LegsTo(map, x, y)
+    local key = SpotKey(map, x, y)
+    if byEnd[key] then return byEnd[key] end
+    if passing[key] ~= nil then return passing[key] or nil end
+    local tx, ty, tinst = Places.ToWorld(map, x, y)
+    local found = {}
+    if tx then
+        for _, leg in ipairs(byMap[map] or {}) do
+            local c = Corners(leg)
+            if c and c.instance == tinst then
+                local bestD, bestSeg = huge, nil
+                for i = 1, #c.wx - 1 do
+                    local d = SegDist(tx, ty, c.wx[i], c.wy[i], c.wx[i + 1], c.wy[i + 1])
+                    if d < bestD then bestD, bestSeg = d, i end
+                end
+                if bestSeg and bestD <= PASS then
+                    local flat = {}
+                    for k = 1, bestSeg * 4 do flat[k] = leg.flat[k] end
+                    flat[#flat + 1], flat[#flat + 2], flat[#flat + 3], flat[#flat + 4] = x, y, 0, 0
+                    found[#found + 1] = { map = map, key = leg.key .. "|" .. key, flat = flat, through = true }
+                end
+            end
+        end
+    end
+    passing[key] = #found > 0 and found or false
+    return passing[key] or nil
 end
 
 -- A walk worked out on SoupNav's zone graph (Nav/WalkGraph.lua) from the
@@ -169,7 +215,7 @@ end
 local function Ahead(target, px, py, inst)
     if not (target and target.map and target.x and target.y and px) then return nil end
     local key = SpotKey(target.map, target.x, target.y)
-    local best, bestSeg, bestD, bx, by = Nearest(byEnd[key], px, py, inst)
+    local best, bestSeg, bestD, bx, by = Nearest(LegsTo(target.map, target.x, target.y), px, py, inst)
     if not best or bestD > NEAR then
         local gl = GraphLeg(target, key, px, py, inst)
         if gl then
@@ -181,7 +227,7 @@ local function Ahead(target, px, py, inst)
     local n = #best.wx
     local j = bestSeg + 1
     while j < n and Places.Distance(px, py, best.wx[j], best.wy[j]) <= REACH do j = j + 1 end
-    return best, j, bestD, bx, by
+    return best, j, bestD, bx, by, bestSeg
 end
 
 --- Where the arrow should point on the baked walk to `target` for a player
@@ -205,33 +251,37 @@ end
 --- spot: first the nearest point on the walk when you're off it. nil when
 --- nothing is baked to the spot.
 function WP.RouteFrom(target, px, py, inst)
-    local best, j, d, bx, by = Ahead(target, px, py, inst)
+    local best, _, d, bx, by, seg = Ahead(target, px, py, inst)
     if not best then return nil end
     local out, flat = {}, best.flat
-    if d > REACH then
-        local x, y = Places.ToZone(bx, by, target.map)
+    -- from you onto the walk where it passes nearest, then on along every
+    -- corner after that (none skipped, so the line never cuts a corner)
+    if d > 1 then
+        local x, y = Places.ToZone(bx, by, target.map, true)
         if x then out[1] = { x, y } end
     end
-    for k = j, #best.wx do out[#out + 1] = { flat[k * 4 - 3], flat[k * 4 - 2] } end
+    for k = seg + 1, #best.wx do out[#out + 1] = { flat[k * 4 - 3], flat[k * 4 - 2] } end
     return out
 end
 
---- The corners (map %) of the baked walk from one guide spot to the next on
---- `map`, ending on b; nil when SoupEngine baked none.
+--- The corners (map %, on b's map) of the walk from one guide spot to the
+--- next, ending on b: SoupEngine's baked walk, else (same map only) one on
+--- SoupNav's graph; nil when there's neither.
 local between = {}   -- graph walks between spots, worked out once: [key] = pts or false
 
-function WP.Between(map, ax, ay, bx, by)
+function WP.Between(amap, ax, ay, bmap, bx, by)
     if not nav then return nil end
-    local key = SpotKey(map, ax, ay) .. ">" .. SpotKey(map, bx, by)
+    local key = SpotKey(amap, ax, ay) .. ">" .. SpotKey(bmap, bx, by)
     local flat = nav.paths[key]
     local out = {}
     if flat then
         for i = 5, #flat - 3, 4 do out[#out + 1] = { flat[i], flat[i + 1] } end
         return out
     end
+    if amap ~= bmap then return nil end
     -- not baked: SoupNav's graph (Nav/WalkGraph.lua)
     if between[key] == nil then
-        local pts = OXP.WalkGraph and nav.packed and OXP.WalkGraph.Route(nav, map, ax, ay, bx, by)
+        local pts = OXP.WalkGraph and nav.packed and OXP.WalkGraph.Route(nav, amap, ax, ay, bx, by)
         between[key] = pts or false
     end
     local pts = between[key]
@@ -240,13 +290,46 @@ function WP.Between(map, ax, ay, bx, by)
     return out
 end
 
+--- Where the arrow aims on the walk to `target` for a player at px, py, and
+--- how far there is still to walk: wx, wy, yards. On the walk, a point LOOK
+--- yards further along it from where you are (so the arrow turns smoothly
+--- before each corner instead of snapping, and never "arrives" at a
+--- corner); off it (more than NEAR yards), the nearest point on it. nil when
+--- there's no walk or the spot itself is within LOOK yards along it.
+local LOOK = 18 -- yards along the walk ahead of you
+
+function WP.Carrot(target, px, py, inst)
+    local best, _, d, bx, by, seg = Ahead(target, px, py, inst)
+    if not best then return nil end
+    local wx, wy, n = best.wx, best.wy, #best.wx
+    -- what's left of the walk from the nearest point on it to the spot
+    local left = Places.Distance(bx, by, wx[seg + 1], wy[seg + 1])
+    for k = seg + 1, n - 1 do left = left + Places.Distance(wx[k], wy[k], wx[k + 1], wy[k + 1]) end
+    if d > NEAR then
+        if Places.Distance(bx, by, wx[n], wy[n]) <= REACH then return nil end
+        return bx, by, d + left
+    end
+    local need, ax, ay = LOOK, bx, by
+    for k = seg + 1, n do
+        local step = Places.Distance(ax, ay, wx[k], wy[k])
+        if step >= need then
+            if k == n and step - need < REACH then return nil end
+            local f = need / step
+            return ax + (wx[k] - ax) * f, ay + (wy[k] - ay) * f, d + left
+        end
+        need = need - step
+        ax, ay = wx[k], wy[k]
+    end
+    return nil -- the spot is just ahead: the arrow's own target
+end
+
 local proxy = {}
-local lastTarget, lastCheck, lastX, lastY, lastTX, lastTY = nil, -huge, nil, nil, nil, nil
+local lastTarget, lastCheck, lastX, lastY, lastTX, lastTY, lastLeft = nil, -huge, nil, nil, nil, nil, nil
 
 function WP.Reset()
     graphLeg.key, graphLeg.leg, graphLeg.at = nil, nil, -huge
     between = {}
-    lastTarget, lastCheck, lastX, lastY, lastTX, lastTY = nil, -huge, nil, nil, nil, nil
+    lastTarget, lastCheck, lastX, lastY, lastTX, lastTY, lastLeft = nil, -huge, nil, nil, nil, nil, nil
 end
 
 --- A stepping stone for the arrow toward `target` ({wx, wy, instance, map,
@@ -257,11 +340,11 @@ function WP.ForArrow(target)
     if target ~= lastTarget or target.x ~= lastTX or target.y ~= lastTY or now - lastCheck >= THROTTLE then
         lastTarget, lastCheck, lastTX, lastTY = target, now, target.x, target.y
         local px, py, inst = Places.Player()
-        lastX, lastY = WP.NextCorner(target, px, py, inst)
+        lastX, lastY, lastLeft = WP.Carrot(target, px, py, inst)
     end
     if not lastX then return nil end
     proxy.wx, proxy.wy, proxy.instance, proxy.map = lastX, lastY, target.instance, target.map
-    proxy.title, proxy.real, proxy.walkPath = target.title, target, true
+    proxy.title, proxy.real, proxy.walkPath, proxy.left = target.title, target, true, lastLeft
     return proxy
 end
 

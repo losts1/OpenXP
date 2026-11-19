@@ -23,6 +23,7 @@ local MAP_TICK, MINI_TICK = 0.25, 0.05
 local function RouteOn() return OXP.settings.mapRoute ~= false end
 
 local routeColor = { 0.72, 0.42, 1.0, 0.92 }
+local CASING = { 0.05, 0.03, 0.10, 0.55 }
 local function RouteColor()
     local c = OXP.settings.routeColor
     if c and c[1] then routeColor[1], routeColor[2], routeColor[3] = c[1], c[2], c[3] end
@@ -111,7 +112,7 @@ local function Clear(c)
 end
 
 -- x, y in pixels from the frame's top left (y down)
-local function Line(c, color, thickness, x1, y1, x2, y2)
+local function Line(c, color, thickness, x1, y1, x2, y2, sub)
     c.nl = c.nl + 1
     local l = c.lines[c.nl]
     if not l then
@@ -120,6 +121,7 @@ local function Line(c, color, thickness, x1, y1, x2, y2)
         c.lines[c.nl] = l
     end
     l:SetVertexColor(color[1], color[2], color[3], color[4])
+    l:SetDrawLayer("OVERLAY", sub or 0)
     l:SetThickness(thickness)
     l:SetStartPoint("TOPLEFT", c.frame, x1, -y1)
     l:SetEndPoint("TOPLEFT", c.frame, x2, -y2)
@@ -144,7 +146,7 @@ local function Rect(c, color, x, y, w, h)
     t:Show()
 end
 
-local function Tex(c, texture, color, size, x, y)
+local function Tex(c, texture, color, size, x, y, sub)
     c.nt = c.nt + 1
     local t = c.tex[c.nt]
     if not t then
@@ -152,6 +154,7 @@ local function Tex(c, texture, color, size, x, y)
         c.tex[c.nt] = t
     end
     t:SetTexture(texture)
+    t:SetDrawLayer("OVERLAY", sub or 0)
     t:SetVertexColor(color[1], color[2], color[3], color[4])
     t:SetSize(size, size)
     t:ClearAllPoints()
@@ -203,12 +206,79 @@ local function Outline(c, pts, color, thickness, clip)
     end
 end
 
+-- Tidy a line in pixels before it's drawn: drop points on top of each other,
+-- little spikes where a walk steps out and straight back (a corner a yard or
+-- two off to the side), and wiggles too small to see as anything but noise
+-- (Douglas-Peucker). What's left is the shape of the walk.
+local function Simplify(pts, eps)
+    if #pts < 3 then return pts end
+    local keep = { [1] = true, [#pts] = true }
+    local stack = { { 1, #pts } }
+    while #stack > 0 do
+        local seg = table.remove(stack)
+        local a, b = seg[1], seg[2]
+        local ax, ay, bx, by = pts[a][1], pts[a][2], pts[b][1], pts[b][2]
+        local dx, dy = bx - ax, by - ay
+        local len = sqrt(dx * dx + dy * dy)
+        local far, at = 0, nil
+        for i = a + 1, b - 1 do
+            local px, py = pts[i][1] - ax, pts[i][2] - ay
+            local d = len > 0 and math.abs(px * dy - py * dx) / len or sqrt(px * px + py * py)
+            if d > far then far, at = d, i end
+        end
+        if at and far > eps then
+            keep[at] = true
+            stack[#stack + 1] = { a, at }
+            stack[#stack + 1] = { at, b }
+        end
+    end
+    local out = {}
+    for i = 1, #pts do if keep[i] then out[#out + 1] = pts[i] end end
+    return out
+end
+
+local function Tidy(pts, thickness)
+    local out = {}
+    for _, p in ipairs(pts) do
+        local last = out[#out]
+        if not last or (p[1] - last[1]) ^ 2 + (p[2] - last[2]) ^ 2 > (thickness * 0.5) ^ 2 then
+            out[#out + 1] = p
+        end
+    end
+    local spike = thickness * 4
+    local changed = true
+    while changed and #out >= 3 do
+        changed = false
+        for i = 2, #out - 1 do
+            local a, b, c = out[i - 1], out[i], out[i + 1]
+            local ux, uy, vx, vy = b[1] - a[1], b[2] - a[2], c[1] - b[1], c[2] - b[2]
+            local lu, lv = sqrt(ux * ux + uy * uy), sqrt(vx * vx + vy * vy)
+            -- turns back on itself (more than ~150 degrees) over a short way
+            if lu > 0 and lv > 0 and (ux * vx + uy * vy) / (lu * lv) < -0.86 and min(lu, lv) < spike then
+                table.remove(out, i)
+                changed = true
+                break
+            end
+        end
+    end
+    return Simplify(out, thickness * 0.6)
+end
+Draw.Tidy = Tidy
+
 -- One clean line with rounded corners, round joints, a small chevron now
 -- and then for the direction, and a dot where it ends.
 local function RouteLeg(c, pts, thickness, clip)
     if #pts < 2 or not RouteOn() then return end
     local color = RouteColor()
-    pts = SmoothOpen(pts, 2)
+    pts = SmoothOpen(Tidy(pts, thickness), 2)
+    -- a dark casing under the line keeps it readable on any ground
+    for i = 1, #pts - 1 do
+        local ax, ay, bx, by = ClipSegment(pts[i][1], pts[i][2], pts[i + 1][1], pts[i + 1][2], clip)
+        if ax then
+            Line(c, CASING, thickness * 2, ax, ay, bx, by, -2)
+            Tex(c, ROUND, CASING, thickness * 2, bx, by, -2)
+        end
+    end
     local travelled, nextMark = 0, thickness * 40
     for i = 1, #pts - 1 do
         local ax, ay, bx, by = ClipSegment(pts[i][1], pts[i][2], pts[i + 1][1], pts[i + 1][2], clip)
@@ -306,18 +376,30 @@ local legCache = {}
 local function BakedPoints(map, px, py, stops)
     local WP = OXP.WalkPaths
     local first = stops[1]
-    if not (first and first[1] == map) then return {} end
+    if not first then return {} end
+    -- walks are in the map % of the spot they end on; the line is drawn on `map`
+    local function Add(pts, list, from)
+        for _, p in ipairs(list) do
+            if from == map then
+                pts[#pts + 1] = p
+            else
+                local wx, wy = Places.ToWorld(from, p[1], p[2])
+                local x, y
+                if wx then x, y = Places.ToZone(wx, wy, map, true) end
+                if x then pts[#pts + 1] = { x, y } end
+            end
+        end
+    end
     local wx, wy, inst = Places.Player()
     local pts = { { px, py } }
     local ahead = WP.RouteFrom({ map = first[1], x = first[2], y = first[3] }, wx, wy, inst)
     if not ahead then return {} end
-    for _, p in ipairs(ahead) do pts[#pts + 1] = p end
+    Add(pts, ahead, first[1])
     for k = 2, #stops do
         local a, b = stops[k - 1], stops[k]
-        if b[1] ~= map then break end
-        local leg = WP.Between(map, a[2], a[3], b[2], b[3])
+        local leg = WP.Between(a[1], a[2], a[3], b[1], b[2], b[3])
         if not leg then break end
-        for _, p in ipairs(leg) do pts[#pts + 1] = p end
+        Add(pts, leg, b[1])
     end
     return pts
 end
@@ -391,10 +473,18 @@ function Draw.WorldMap()
             for _, p in ipairs(line) do pts[#pts + 1] = { P(p[1], p[2]) } end
             RouteLeg(wmc, pts, 2 / scale)
         end
-    elseif px and pmap == map and #stops > 0 then
-        local pts = {}
-        for _, p in ipairs(RoutePoints(map, px, py, stops, level)) do pts[#pts + 1] = { P(p[1], p[2]) } end
-        RouteLeg(wmc, pts, 2 / scale)
+    elseif px and #stops > 0 and (pmap == map or OXP.Target.BAKED_ONLY) then
+        if pmap ~= map then
+            -- SoupEngine's walks cross zones: you on the map shown, even off its edge
+            local wx, wy = Places.Player()
+            px, py = nil, nil
+            if wx then px, py = Places.ToZone(wx, wy, map, true) end
+        end
+        if px then
+            local pts = {}
+            for _, p in ipairs(RoutePoints(map, px, py, stops, level)) do pts[#pts + 1] = { P(p[1], p[2]) } end
+            RouteLeg(wmc, pts, 2 / scale)
+        end
     end
 end
 

@@ -95,7 +95,22 @@ function Arrow.Vector(t)
 end
 
 local elapsed = 0
-local function Draw()
+local LEAVE = ARRIVED + 5 -- yards: "Here" stays until you're this far off again
+local TURN = 12           -- how fast the pointer swings to a new heading (per second)
+local shownAngle, wasHere, lastReal
+local pi2 = math.pi * 2
+
+-- Swing the pointer toward `want` instead of snapping (the look-ahead point
+-- on a walk moves on as you go, and a snap reads as a flicker).
+local function Turn(want, dt)
+    if not shownAngle then shownAngle = want return want end
+    local diff = (want - shownAngle + math.pi) % pi2 - math.pi
+    local k = math.min(1, (dt or TICK) * TURN)
+    shownAngle = (shownAngle + diff * k) % pi2
+    return shownAngle
+end
+
+local function Draw(dt)
     local t = OXP.Target.Update()
     if not t then
         f.pointer:Hide()
@@ -103,25 +118,45 @@ local function Draw()
         f.dist:SetText("")
         f.label:SetText("")
         f:SetAlpha(0)
+        shownAngle, wasHere, lastReal = nil, false, nil
         return
     end
     f:SetAlpha(1)
     ApplySizes()
     local angle, dist = Arrow.Vector(t)
-    local here = t.inside or (dist and dist <= ARRIVED)
-    if here then
+    -- "Here" is about the real spot only, never a corner of the walk on the
+    -- way, so the arrow doesn't flash "Here" and turn away again
+    local real = t.focus or t.real or t
+    if real ~= lastReal then wasHere, lastReal = false, real end
+    local realDist = dist
+    if real ~= t then
+        local _, d = Arrow.Vector(real)
+        realDist = d
+    end
+    local here = realDist and realDist <= (wasHere and LEAVE or ARRIVED) or false
+    wasHere = here
+    if t.inside then
+        f.pointer:Hide()
+        f.check:Show()
+        f.ring:SetVertexColor(GREEN[1], GREEN[2], GREEN[3], 1)
+        f.dist:SetText(L("In the area"))
+        f.dist:SetTextColor(GREEN[1], GREEN[2], GREEN[3])
+        shownAngle = nil
+    elseif here then
         f.pointer:Hide()
         f.check:Show()
         f.ring:SetVertexColor(GREEN[1], GREEN[2], GREEN[3], 1)
         f.dist:SetText(L("Here"))
         f.dist:SetTextColor(GREEN[1], GREEN[2], GREEN[3])
+        shownAngle = nil
     elseif angle then
         local facing = GetPlayerFacing and GetPlayerFacing()
         f.check:Hide()
         f.pointer:Show()
-        if facing then f.pointer:SetRotation(angle - facing) end
+        if facing then f.pointer:SetRotation(Turn(angle - facing, dt)) end
         f.ring:SetVertexColor(BLUE[1], BLUE[2], BLUE[3], 0.6)
-        f.dist:SetText(("%d yd"):format(dist))
+        -- along a walk: what's left of it, not the straight line to its next bend
+        f.dist:SetText(("%d yd"):format(t.left or realDist or dist))
         f.dist:SetTextColor(0.96, 0.97, 0.98)
     else
         -- another continent and no plan to get there
@@ -131,15 +166,16 @@ local function Draw()
         f.dist:SetText("...")
     end
     f.label:SetText(t.title and OXP.Text.Strip(t.title) or "")
-    Arrow.lastDistance, Arrow.lastHere = dist, here
+    Arrow.lastDistance, Arrow.lastHere = realDist or dist, here or t.inside or false
 end
 Arrow.Draw = OXP.Perf.Wrap("arrow", Draw)
 
 f:SetScript("OnUpdate", function(_, dt)
     elapsed = elapsed + dt
     if elapsed < TICK then return end
+    local spent = elapsed
     elapsed = 0
-    Arrow.Draw()
+    Arrow.Draw(spent)
 end)
 
 function Arrow.Refresh()

@@ -151,6 +151,20 @@ turns this on (`false` gives back the old arrow, trips and terrain ways).
   walk to the first stop, then the baked walk (or a graph walk) between each
   pair of the next few stops. Where there's no walk the line stops: no
   straight lines and no terrain pathing.
+- **Arrival** (2026-11-19): on a walk the arrow aims 18 yards further along
+  it (`WalkPaths.Carrot`), so it swings round each corner smoothly instead of
+  snapping, and shows how much of the walk is left. "Here" is only about the
+  real spot (or the pinpointed mob below), never a corner on the way, and
+  stays on until you're 13 yards off again, so it can't flicker. The pointer
+  eases to new headings.
+- **Kill and loot steps** (`Areas.Focus`): you walk to the step's spot; inside
+  its kill/loot area the arrow says "In the area" with a check. When the step
+  needs a mob or object with only one to three spawns near its spot (a named
+  mob like Gobbler, a chest), the arrow goes straight to the nearest one
+  instead, and its nameplate gets the boss marker.
+- **Route line**: tidied before it's drawn (dropped spikes where a walk steps
+  out and straight back, wiggles too small to matter), joined to the walk
+  where it passes nearest you without skipping corners, on a dark casing.
 - **Removed** while it's on: `/oxp path`, `/oxp wall`, and the "Plan trips to
   other zones" and "Route style" settings. New: `/oxp nav` says whether
   OpenXP_Nav loaded and what walk the arrow has to this step's spot.
@@ -165,6 +179,16 @@ zones (the arrow points straight until you're in the step's zone).
 - Walks between zones (SoupNav's meshes stop at zone edges).
 - Bake walks from graveyards to the guide spots.
 - Floors: tell the player a spot is in a cave or upstairs.
+
+## For SoupEngine / SoupNav (asked for by Matt, not OpenXP's to build)
+
+- The shape of the walks: wall hugging, detours and wiggles come from the
+  corners SoupEngine bakes (and SoupNav's graph). OpenXP only tidies tiny
+  spikes when it draws them.
+- Exact boss, rare and chest spots, and their floors (caves, upstairs):
+  OpenXP pinpoints them from quest spawn data; SoupEngine could bake better
+  ones into OpenXP_Nav next to `spots`.
+- Walks from graveyards, and across the zone borders the meshes don't cover.
 
 ## Known issues (SoupNav side, not fixed here)
 

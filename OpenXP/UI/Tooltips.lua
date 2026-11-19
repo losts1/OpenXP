@@ -7,7 +7,7 @@
 --          Their nameplates get the item's icon and your count.
 --   NPCs:  which guide step needs them (pick up, turn in, talk to, kill).
 -- Questie's database is only read while the game runs, never copied.
-local _, OXP = ...
+local ADDON, OXP = ...
 
 local Tips = {}
 OXP.Tooltips = Tips
@@ -249,7 +249,7 @@ function Tips.GuideStep(unitName, npcId)
                 if role then
                     local what = L(ROLE[role])
                     if (role == "accept" or role == "turnin") then what = what .. ": " .. QuestDB.QuestName(g.quest) end
-                    return pos, what
+                    return pos, what, role
                 end
             end
         end
@@ -430,51 +430,122 @@ end
 ------------------------------------------------------------------------
 
 local plates = {}
+local MAP = "Interface\\AddOns\\" .. ADDON .. "\\Media\\Map\\"
+local PLATE_ICON = { kill = "kill", loot = "loot", boss = "boss", accept = "accept", turnin = "turnin",
+                     target = "talk", mob = "kill" }
 
+--- What a mob's or NPC's nameplate shows: { kind, text, item = itemId,
+--- step = pos } or nil. kind: "loot" (drops an item a quest needs), "kill"
+--- (counts for a kill objective), "boss" (a named mob the step needs, with
+--- only a spawn or two), "accept", "turnin", "target" (the guide's next
+--- steps need this NPC).
 function Tips.PlateInfo(unit)
-    if not (unit and UnitExists(unit)) or UnitIsPlayer(unit) or not UnitCanAttack("player", unit) then return nil end
-    local loot = Tips.MobItemLines(UnitName(unit), Tips.NpcIdOf(UnitGUID(unit)))
-    return loot[1], #loot
+    if not (unit and UnitExists(unit)) or UnitIsPlayer(unit) then return nil end
+    local name, npcId = UnitName(unit), Tips.NpcIdOf(UnitGUID(unit))
+    if UnitCanAttack("player", unit) then
+        local loot = Tips.MobItemLines(name, npcId)
+        local boss = Tips.IsPinpointed(npcId)
+        local n = loot[1]
+        if n then
+            return { kind = boss and "boss" or "loot", item = n.itemId,
+                     text = n.have .. "/" .. n.need .. (#loot > 1 and " +" or "") }
+        end
+        for _, q in ipairs(Tips.KillLines(name)) do
+            if not q.done then return { kind = boss and "boss" or "kill", text = q.have .. "/" .. q.need } end
+        end
+        if boss then return { kind = "boss", text = "" } end
+    end
+    local pos, _, role = Tips.GuideStep(name, npcId)
+    if pos and (role == "accept" or role == "turnin" or role == "target" or role == "mob") then
+        return { kind = role, text = "#" .. pos, step = pos }
+    end
+end
+
+--- Is npcId a named mob the current step needs (it has only a spawn or two)?
+function Tips.IsPinpointed(npcId)
+    if not npcId or not Engine.GetGuide() then return false end
+    for _, pos in ipairs(Engine.GetActive()) do
+        local step = Engine.GetSteps()[pos]
+        for _, p in ipairs(step and OXP.Areas.Pinpoints(step) or {}) do
+            if p.kind == "NPC" and p.id == npcId then return true end
+        end
+    end
+    return false
+end
+
+-- Where a plate's marker goes: above the name of whichever nameplate add-on
+-- draws it (KuiNameplates for Forever, Kesava's KuiNameplates, Plater), else
+-- the game's own plate. The marker is parented to that add-on's frame so it
+-- fades with it.
+local function PlateHost(plate)
+    local function T(v) return type(v) == "table" and v or nil end
+    local kf = T(plate.KuiForeverPlate)
+    if kf then return kf, T(kf.name) or kf end
+    local kui = T(plate.kui)
+    if kui then return kui, T(kui.NameText) or T(kui.HealthBar) or kui end
+    local plater = T(plate.unitFrame)
+    if plater then return plater, T(plater.healthBar) or plater end
+    local uf = T(plate.UnitFrame)
+    return plate, uf and (T(uf.name) or uf) or plate
 end
 
 local function PlateFrame(plate)
+    local host, above = PlateHost(plate)
     local f = plates[plate]
-    if f then return f end
-    local uf = plate.UnitFrame
-    local above = uf and uf.name or uf or plate
-    f = CreateFrame("Frame", nil, plate)
+    if f and f.host == host then return f end
+    if not f then
+        f = CreateFrame("Frame", nil, host)
+        f.badge = f:CreateTexture(nil, "ARTWORK")
+        f.badge:SetSize(22, 22)
+        f.badge:SetPoint("LEFT")
+        f.item = f:CreateTexture(nil, "OVERLAY")
+        f.item:SetSize(14, 14)
+        f.item:SetPoint("BOTTOMRIGHT", f.badge, "BOTTOMRIGHT", 5, -3)
+        f.item:SetTexCoord(0.08, 0.92, 0.08, 0.92)
+        f.text = f:CreateFontString(nil, "OVERLAY", "GameFontNormal")
+        f.text:SetPoint("LEFT", f.badge, "RIGHT", 4, 0)
+        f.text:SetShadowColor(0, 0, 0, 1)
+        f.text:SetShadowOffset(1, -1)
+        plates[plate] = f
+    end
+    f:SetParent(host)
+    f.host = host
     f:SetSize(60, 24)
-    f:SetPoint("BOTTOM", above, "TOP", 0, 4)
+    f:ClearAllPoints()
+    f:SetPoint("BOTTOM", above, "TOP", 0, 6)
     f:SetFrameStrata("HIGH")
-    f.icon = f:CreateTexture(nil, "ARTWORK")
-    f.icon:SetSize(24, 24)
-    f.icon:SetPoint("LEFT")
-    f.icon:SetTexCoord(0.08, 0.92, 0.08, 0.92)
-    f.mark = f:CreateTexture(nil, "OVERLAY")
-    f.mark:SetSize(14, 14)
-    f.mark:SetPoint("TOPLEFT", f.icon, "TOPLEFT", -5, 5)
-    f.mark:SetTexture(QUEST_ICON)
-    f.text = f:CreateFontString(nil, "OVERLAY", "GameFontNormal")
-    local font, size = f.text:GetFont()
-    if font then f.text:SetFont(font, (size or 12) + 1, "OUTLINE") end
-    f.text:SetPoint("LEFT", f.icon, "RIGHT", 4, 0)
-    plates[plate] = f
     return f
 end
 
+--- The marker on a nameplate (tests): its frame, or nil.
+function Tips.PlateMarker(plate) return plates[plate] end
+
+local TEXT_COLOR = { kill = { 1, 0.62, 0.56 }, boss = { 1, 0.82, 0.38 }, loot = { 1, 0.86, 0.5 },
+                     accept = { 1, 0.86, 0.3 }, turnin = { 1, 0.86, 0.3 }, target = { 0.6, 0.82, 1 },
+                     mob = { 1, 0.62, 0.56 } }
+
 function Tips.UpdatePlate(unit)
     local plate = C_NamePlate and C_NamePlate.GetNamePlateForUnit and C_NamePlate.GetNamePlateForUnit(unit)
-    if not plate then return end
-    local n, count
-    if Tips.NameplatesEnabled() then n, count = Tips.PlateInfo(unit) end
-    if not n then
+    if not plate or (plate.IsForbidden and plate:IsForbidden()) then return end
+    local info
+    if Tips.NameplatesEnabled() then info = Tips.PlateInfo(unit) end
+    if not info then
         if plates[plate] then plates[plate]:Hide() end
         return
     end
     local f = PlateFrame(plate)
-    f.icon:SetTexture(GetItemIcon and GetItemIcon(n.itemId) or QUEST_ICON)
-    f.text:SetText(n.have .. "/" .. n.need .. (count > 1 and " +" or ""))
-    f:SetWidth(28 + (f.text:GetStringWidth() or 30))
+    local big = info.kind == "boss"
+    f.badge:SetSize(big and 26 or 22, big and 26 or 22)
+    f.badge:SetTexture(MAP .. (PLATE_ICON[info.kind] or "kill"))
+    local icon = info.item and GetItemIcon and GetItemIcon(info.item)
+    f.item:SetTexture(icon)
+    f.item:SetShown(icon ~= nil)
+    OXP.Fonts.Apply(f.text, OXP.Fonts.Path(), 13, "OUTLINE")
+    local c = TEXT_COLOR[info.kind] or TEXT_COLOR.kill
+    f.text:SetTextColor(c[1], c[2], c[3])
+    f.text:SetText(info.text or "")
+    f:SetWidth((big and 30 or 26) + (f.text:GetStringWidth() or 30))
+    f.info = info
     f:Show()
 end
 
@@ -498,7 +569,11 @@ local function RefreshSoon()
     end)
 end
 
-OXP.On("NAME_PLATE_UNIT_ADDED", function(_, unit) pcall(Tips.UpdatePlate, unit) end)
+OXP.On("NAME_PLATE_UNIT_ADDED", function(_, unit)
+    pcall(Tips.UpdatePlate, unit)
+    -- a nameplate add-on may build its plate after us: move onto it next frame
+    if C_Timer and C_Timer.After then C_Timer.After(0, function() pcall(Tips.UpdatePlate, unit) end) end
+end)
 OXP.On("NAME_PLATE_UNIT_REMOVED", function(_, unit)
     local plate = C_NamePlate and C_NamePlate.GetNamePlateForUnit and C_NamePlate.GetNamePlateForUnit(unit)
     if plate and plates[plate] then plates[plate]:Hide() end

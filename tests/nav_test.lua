@@ -371,10 +371,10 @@ do
     local function find(test)
         for _, p in ipairs(pins) do if test(p) then return p end end
     end
-    t.ok(find(function(p) return p.num == "2" and p.tip[1]:find("Step 2", 1, true) end), "a numbered pin for the step, with a tooltip")
-    t.ok(find(function(p) return p.label == "#3" end), "the turn-in after it: a ? pin with its number")
+    t.ok(find(function(p) return p.num == "2" and tostring(p.tip[2]):find("Step 2", 1, true) end), "a numbered pin for the step, with a tooltip")
+    t.ok(find(function(p) return p.tag == "3" and tostring(p.icon):find("turnin", 1, true) end), "the turn-in after it: a ? pin with its number")
     t.ok(find(function(p) return p.tip and p.tip[1] == "Bluegill Murloc" end), "mob icons where the murlocs spawn")
-    t.ok(find(function(p) return p.label == "Gobbler" and p.size == 16 end), "Gobbler gets his own big pin with his name")
+    t.ok(find(function(p) return p.label == "Gobbler" and p.size == 20 and tostring(p.icon):find("boss", 1, true) end), "Gobbler gets his own big pin with his name")
     t.ok(find(function(p) return (p.label or ""):find("area (#2)", 1, true) end), "the blue area is labelled")
     local mobs = 0
     for _, p in ipairs(pins) do if p.tip and p.tip[1] == "Bluegill Murloc" then mobs = mobs + 1 end end
@@ -409,6 +409,59 @@ do
     t.eq(#game.errors, 0, "no Lua errors: " .. table.concat(game.errors, " | "))
 end
 
+print("-- SoupEngine arrow at a kill step: In the area, or straight at the named mob")
+if true then
+    local game, OXP = newGame({ level = 23, map = 1437, x = 15.26, y = 39.83 })
+    local g = addGuide(OXP, {
+        { { "goto", zone = "Wetlands", x = 15.26, y = 39.83 },
+          { "text", text = "Kill |cOXP_ENEMY_Bluegill Murloc|r" },
+          { "complete", quest = 279, obj = 1 }, { "complete", quest = 279, obj = 2 } },
+    }, "Focus test")
+    game:Accept(279, 2)
+    OXP.Engine.Load(g.key)
+    game.now = game.now + 1
+    local aim = OXP.Target.Update()
+    if OXP.Target.BAKED_ONLY then
+        t.ok(aim and aim.focus and aim.focus.name == "Gobbler", "by the spot with Gobbler still needed: the arrow goes to him (" .. tostring(aim and aim.title) .. ")")
+        t.eq(aim and aim.real and aim.real.title, "Kill Bluegill Murloc", "the step's own words stay the real target's")
+        -- nameplates: Gobbler's gets the boss marker, on KuiNameplates' plate when it's there
+        local gob
+        local saved = { UnitExists = _G.UnitExists, UnitName = _G.UnitName, UnitGUID = _G.UnitGUID,
+                        UnitCanAttack = _G.UnitCanAttack, UnitIsPlayer = _G.UnitIsPlayer, C_NamePlate = _G.C_NamePlate }
+        for _, p in ipairs(OXP.Areas.Pinpoints(OXP.Engine.GetSteps()[1]) or {}) do if p.name == "Gobbler" then gob = p.id end end
+        t.ok(gob, "Gobbler is pinpointed")
+        local blizz = CreateFrame("Frame")
+        blizz.UnitFrame = CreateFrame("Frame", nil, blizz)
+        local kui = CreateFrame("Frame", nil, blizz)
+        kui.name = kui:CreateFontString()
+        _G.UnitExists = function() return true end
+        _G.UnitName = function() return "Gobbler" end
+        _G.UnitGUID = function() return "Creature-0-0-0-0-" .. tostring(gob) .. "-0" end
+        _G.UnitCanAttack = function() return true end
+        _G.UnitIsPlayer = function() return false end
+        _G.C_NamePlate = { GetNamePlateForUnit = function() return blizz end, GetNamePlates = function() return { blizz } end }
+        local info = OXP.Tooltips.PlateInfo("nameplate1")
+        t.ok(info and info.kind == "boss", "Gobbler's plate: the boss marker (" .. tostring(info and info.kind) .. ")")
+        OXP.Tooltips.UpdatePlate("nameplate1")
+        blizz.KuiForeverPlate = kui
+        OXP.Tooltips.UpdatePlate("nameplate1")
+        local m = OXP.Tooltips.PlateMarker(blizz)
+        t.ok(m and m:IsShown() and m:GetParent() == kui, "the marker moved onto KuiNameplates' plate")
+        for k, v in pairs(saved) do _G[k] = v end
+        game:FinishObjective(279, 2)
+        game.now = game.now + 1
+        aim = OXP.Target.Update()
+        t.ok(aim and aim.inside, "only murlocs left, inside their area: In the area")
+        OXP.Arrow.Draw(0.05)
+        t.ok(OXP.Arrow.lastHere, "the arrow shows the check")
+        game:MoveTo(1437, 60, 60)
+        game.now = game.now + 1
+        aim = OXP.Target.Update()
+        t.ok(aim and not aim.inside, "far away: walking there again")
+    end
+    t.eq(#game.errors, 0, "no Lua errors: " .. table.concat(game.errors, " | "))
+end
+
 ------------------------------------------------------------------------
 print("-- baked walks from OpenXP_Nav: the arrow follows their corners")
 do
@@ -433,18 +486,36 @@ do
         local a = OXP.Target.Update()
         return OXP.Places.ToZone(a.wx, a.wy, 1453)
     end
+    -- the arrow looks 18 yards (1.8% in the fake world) along the walk ahead
     zx, zy = aimAt()
-    t.ok(math.abs(zx - 20) < 0.01 and math.abs(zy - 30) < 0.01, "at the start: the first corner (" .. zx .. "," .. zy .. ")")
+    t.ok(math.abs(zx - 20) < 0.01 and math.abs(zy - 48.2) < 0.05, "at the start: along the first stretch (" .. zx .. "," .. zy .. ")")
     t.eq(OXP.Target.Current().real.x, 60, "the real target is still the guide's spot")
+    t.ok(math.abs(OXP.Target.Current().left - 800) < 1, "the distance is what's left of the walk: " .. tostring(OXP.Target.Current().left))
+    game:MoveTo(1453, 20, 31)
+    zx, zy = aimAt()
+    t.ok(math.abs(zy - 30) < 0.01 and zx > 20.5 and zx < 21, "near a corner: already round it, no snap (" .. zx .. "," .. zy .. ")")
+    OXP.Arrow.Draw(0.05)
+    t.ok(not OXP.Arrow.lastHere, "a corner of the walk is never \"Here\"")
     game:MoveTo(1453, 20.2, 30.3)
     zx, zy = aimAt()
-    t.ok(math.abs(zx - 60) < 0.01 and math.abs(zy - 30) < 0.01, "corner reached: the next one (" .. zx .. "," .. zy .. ")")
+    t.ok(math.abs(zx - 22) < 0.05 and math.abs(zy - 30) < 0.01, "corner passed: along the next stretch (" .. zx .. "," .. zy .. ")")
     game:MoveTo(1453, 40, 31)
     zx, zy = aimAt()
-    t.ok(math.abs(zx - 60) < 0.01 and math.abs(zy - 30) < 0.01, "halfway along: still that corner")
+    t.ok(math.abs(zx - 41.8) < 0.05 and math.abs(zy - 30) < 0.01, "halfway along: on ahead (" .. zx .. "," .. zy .. ")")
     game:MoveTo(1453, 60, 40)
     zx, zy = aimAt()
-    t.ok(math.abs(zx - 60) < 0.01 and math.abs(zy - 50) < 0.01, "on the last stretch: the spot itself")
+    t.ok(math.abs(zx - 60) < 0.01 and math.abs(zy - 41.8) < 0.05, "on the last stretch: toward the spot")
+    game:MoveTo(1453, 60, 48.5)
+    zx, zy = aimAt()
+    t.ok(math.abs(zx - 60) < 0.01 and math.abs(zy - 50) < 0.01, "the spot just ahead: the spot itself")
+    game:MoveTo(1453, 60, 49.5)
+    game.now = game.now + 1
+    OXP.Arrow.Draw(0.05)
+    t.ok(OXP.Arrow.lastHere, "Here at the spot")
+    game:MoveTo(1453, 60, 48.9)
+    game.now = game.now + 1
+    OXP.Arrow.Draw(0.05)
+    t.ok(OXP.Arrow.lastHere, "a step back off the spot: still Here (no flicker at the edge)")
     game:MoveTo(1453, 40, 80)
     zx, zy = aimAt()
     if OXP.Target.BAKED_ONLY then
@@ -465,15 +536,68 @@ do
             same = same and pts[i] and math.abs(pts[i][1] - p[1]) < 0.01 and math.abs(pts[i][2] - p[2]) < 0.01
         end
         t.ok(same, "route line: you, the walk's corners, the spot (" .. #pts .. " points)")
-        local between = WP.Between(1453, 90, 90, 60, 50)
+        local between = WP.Between(1453, 90, 90, 1453, 60, 50)
         t.ok(between and #between == 1 and between[1][1] == 60, "a baked walk between two spots")
         game:MoveTo(1453, 40, 80)
         local back = OXP.MapDraw.RoutePoints(1453, 40, 80, { { 1453, 60, 50 } }, 22)
         t.ok(#back == 3 and back[3][1] == 60 and back[3][2] == 50, "off every walk: you, back onto the walk, the spot")
-        t.eq(#OXP.MapDraw.RoutePoints(1453, 20, 50, { { 1453, 33, 33 } }, 22), 0, "nothing baked to the spot: no route line")
+        t.eq(#OXP.MapDraw.RoutePoints(1453, 20, 50, { { 1453, 33, 42 } }, 22), 0, "nothing baked to or past the spot: no route line")
     end
     local z, indoor = WP.Floor(1453, 60, 50)
     t.ok(z == 12.5 and indoor, "the spot's floor")
+    WP.Use(nil)
+    t.eq(#game.errors, 0, "no Lua errors: " .. table.concat(game.errors, " | "))
+end
+
+print("-- the route line is tidied before it's drawn")
+do
+    local _, OXP = newGame({ level = 22 })
+    local Tidy = OXP.MapDraw.Tidy
+    -- pixels: along, a spike out and straight back, a tiny wiggle, a real corner
+    local pts = Tidy({ { 0, 0 }, { 50, 0 }, { 54, 0.2 }, { 50, 0.3 }, { 80, 0.4 }, { 100, 0 }, { 100, 60 } }, 2)
+    local spike, corner = false, false
+    for _, p in ipairs(pts) do
+        if p[1] == 54 then spike = true end
+        if p[1] == 100 and p[2] == 0 then corner = true end
+    end
+    t.ok(not spike, "a spike out and back is dropped")
+    t.ok(corner and #pts == 3, "wiggles go, the real corner stays (" .. #pts .. " points)")
+end
+
+print("-- walks across zones, and walks that pass through a spot")
+do
+    local game, OXP = newGame({ level = 22 })
+    local WP = OXP.WalkPaths
+    -- from Ashenvale (1440) into Stonetalon (1442): corners in Stonetalon's
+    -- map %, below 0 while the walk is still in Ashenvale; it passes the
+    -- tunnel's exit (40, 20) on its way to the camp at 50, 50
+    WP.Use({ paths = {
+        ["1440:50.00,50.00>1442:50.00,50.00"] = { -30, -40, 0, 0, -10, -20, 0, 1, 40, 18, 0, 0, 45, 35, 0, 0, 50, 50, 0, 0 },
+    }, spots = {} })
+    local function zone(a, map) return OXP.Places.ToZone(a.wx, a.wy, map, true) end
+    -- standing in Ashenvale where the walk starts
+    local sx, sy = OXP.Places.ToWorld(1442, -30, -40)
+    game:MoveToWorld(sx, sy, 1)
+    local nx, ny = WP.NextCorner({ map = 1442, x = 50, y = 50 }, sx, sy, 1)
+    local cx, cy
+    if nx then cx, cy = OXP.Places.ToZone(nx, ny, 1442, true) end
+    t.ok(cx and math.abs(cx + 10) < 0.01 and math.abs(cy + 20) < 0.01, "from the next zone: the corner off the map's edge (" .. tostring(cx) .. "," .. tostring(cy) .. ")")
+    -- a step that only reaches the tunnel's exit (40, 20): the walk cut there
+    local g = addGuide(OXP, { { { "reach", zone = "Stonetalon Mountains", x = 40, y = 20 } } }, "Reach test")
+    OXP.Engine.Load(g.key)
+    game.now = game.now + 1
+    local a = OXP.Target.Update()
+    t.ok(a and a.walkPath, "a spot the walk passes through: the arrow follows it")
+    local ax, ay = zone(a, 1442)
+    t.ok(math.abs((ay + 40) - (ax + 30)) < 0.01 and ax > -30 and ax < -10, "toward the tunnel, along the walk (" .. ax .. "," .. ay .. ")")
+    local px, py = OXP.Places.ToZone(sx, sy, 1440, true)
+    local pts = OXP.MapDraw.RoutePoints(1440, px, py, { { 1442, 40, 20 } }, 22)
+    local last = pts[#pts]
+    local lx, ly
+    if last then lx, ly = OXP.Places.ToWorld(1440, last[1], last[2]) end
+    local ex, ey = OXP.Places.ToWorld(1442, 40, 20)
+    t.ok(#pts >= 3 and lx and math.abs(lx - ex) < 0.5 and math.abs(ly - ey) < 0.5,
+        "the route line on Ashenvale's map runs into Stonetalon and stops at the exit (" .. #pts .. " points)")
     WP.Use(nil)
     t.eq(#game.errors, 0, "no Lua errors: " .. table.concat(game.errors, " | "))
 end

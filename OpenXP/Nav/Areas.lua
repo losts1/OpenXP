@@ -221,3 +221,98 @@ function Areas.Target(step, title)
     t.wx, t.wy, t.instance, t.map = wx, wy, inst, map
     return t
 end
+
+------------------------------------------------------------------------
+-- SoupEngine arrow (Nav/Target.lua BAKED_ONLY): walk to the step's spot,
+-- then "In the area" while you're inside its kill/loot area, or straight at
+-- a named mob or chest the step needs when there are only one or two
+------------------------------------------------------------------------
+
+local FEW = 3 -- spawns: a mob or object with this many or fewer gets pinpointed
+
+--- What a step still needs that has only a few spawns near its spot (a named
+--- mob, a chest, a single object): { {x, y, name = s, id = n, kind = "NPC"|"Object"}, ... }, map; or nil.
+function Areas.Pinpoints(step)
+    local spot = Areas.StepSpot(step)
+    if not spot then return nil end
+    local d = OXP.Terrain.Data(spot.map)
+    local zoneArea = d and d.area
+    local out, seen = {}, {}
+    for _, g in ipairs(step.goals) do
+        if g[1] == "complete" and g.quest and g.obj and OXP.Goals.State(g, step.marks) == "todo" then
+            local sp = OXP.QuestDB.ObjectiveSpawns(g.quest, g.obj, spot.map, zoneArea) or {}
+            local per, near = {}, {}
+            for _, p in ipairs(sp) do
+                per[p.src] = (per[p.src] or 0) + 1
+                local dx, dy = p[1] - spot.x, p[2] - spot.y
+                if dx * dx + dy * dy <= (REACH * 2) ^ 2 then near[#near + 1] = p end
+            end
+            for _, p in ipairs(near) do
+                local src = p.src
+                local key = tostring(src.id) .. ":" .. floor(p[1] * 10) .. ":" .. floor(p[2] * 10)
+                if per[src] <= FEW and not seen[key] then
+                    seen[key] = true
+                    out[#out + 1] = { p[1], p[2], name = src.name, id = src.id, kind = src.kind, item = src.item }
+                end
+            end
+        end
+    end
+    if #out == 0 then return nil end
+    return out, spot.map
+end
+
+local pin = {}
+
+--- For the SoupEngine arrow: what to show for a kill/loot step once you're
+--- there. A pinpointed mob or chest ({wx, wy, instance, map, x, y, title,
+--- pin = true}) when the step needs one; "In the area" ({inside = true})
+--- inside the step's area; nil while you're still on your way (the arrow
+--- walks to the step's spot).
+function Areas.Focus(step, title)
+    if not (step and Areas.On()) then return nil end
+    for _, g in ipairs(step.goals) do
+        local state = OXP.Goals.State(g, step.marks)
+        if (g[1] == "accept" or g[1] == "turnin") and state == "todo" then return nil end
+    end
+    local px, py, pmap = Places.PlayerZone()
+    if not px then return nil end
+    local a = Areas.ForStep(step)
+    local inside = a and a.map == pmap and Terrain.InsidePoly(a.poly, px, py)
+    local pts, map = Areas.Pinpoints(step)
+    if pts and map == pmap then
+        -- in the area, or close to the spot when there's no area (Gobbler)
+        local spot = Areas.StepSpot(step)
+        local sx, sy = Places.ToWorld(spot.map, spot.x, spot.y)
+        local wpx, wpy = Places.Player()
+        local close = inside or (sx and Places.Distance(wpx, wpy, sx, sy) <= 120)
+        if close then
+            local best, bestD, near, nearD
+            for _, p in ipairs(pts) do
+                local wx, wy = Places.ToWorld(map, p[1], p[2])
+                if wx then
+                    local d = Places.Distance(wpx, wpy, wx, wy)
+                    if not nearD or d < nearD then near, nearD = p, d end
+                    if d > AWAY and (not bestD or d < bestD) then best, bestD = p, d end
+                end
+            end
+            -- several spawns: the nearest one you aren't standing at
+            local p = (#pts > 1 and nearD and nearD <= AWAY and best) or near
+            if p then
+                local wx, wy, inst = Places.ToWorld(map, p[1], p[2])
+                pin.wx, pin.wy, pin.instance, pin.map, pin.x, pin.y = wx, wy, inst, map, p[1], p[2]
+                -- the step's words when they name it ("Kill Gobbler for
+                -- Gobbler's Head"), else its name
+                local name = p.name
+                local says = title and name and OXP.Text.Strip(title):find(name, 1, true)
+                pin.title, pin.name, pin.pin, pin.kind = (says or not name) and title or name, name, true, p.kind
+                return pin
+            end
+        end
+    end
+    if inside then
+        here.title = title
+        here.wx, here.wy, here.instance = Places.Player()
+        here.map = pmap
+        return here
+    end
+end

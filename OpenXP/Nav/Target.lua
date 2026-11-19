@@ -115,8 +115,19 @@ function Target.Update()
             current = nil
             return nil
         end
-        current = OXP.WalkPaths.ForArrow(base) or base
+        -- a kill/loot step once you're there: "In the area", or straight at
+        -- the named mob or chest it needs (Nav/Areas.lua)
+        local focus = not Target.override and base.step and OXP.Areas.Focus(base.step, base.title)
+        if focus and focus.inside then
+            current = focus
+            current.real = base
+            return current
+        end
+        local aim = focus or base
+        current = OXP.WalkPaths.ForArrow(aim) or aim
         current.real = base
+        -- where "Here" is: the pinpointed mob or chest, else the spot
+        current.focus = focus or nil
         return current
     end
     local hint = OXP.PathHints.go

@@ -1,14 +1,17 @@
 -- Pins on the world map and minimap, so the map alone says what to do and
--- where:
---   steps   the step you're on and the next few, numbered like the card
---           (#11), as "!" where you pick a quest up and "?" where you hand
---           one in; the current one bigger
---   mobs    a mark on every spawn of what the shown steps still need
---           (skull: kill it; bag: it drops what you need; a big skull and
---           its name for a mob with only a spawn or two, like Gobbler)
+-- where (icons in Media/Map, drawn by tools/make_icons.py):
+--   steps   the step you're on and the next few: a numbered badge ringed in
+--           the step's colour (red kill, amber loot, blue travel), a gold "!"
+--           where you pick a quest up and "?" where you hand one in (grey
+--           until it's ready), each with its step number; the current one
+--           bigger, with a soft pulsing glow
+--   mobs    a mark on every spawn of what the shown steps still need (skull:
+--           kill it; pouch: it drops what you need; chest or sparkle: an
+--           object to loot or use; a big boss badge and its name for a mob
+--           with only a spawn or two, like Gobbler)
 --   areas   a label on each blue kill/loot area
--- Every pin has a tooltip. Pins are rebuilt only when the step or its
--- progress changes, from a reused pool.
+-- Every pin has a tooltip (what, the step, your progress). Pins are rebuilt
+-- only when the step or its progress changes, from a reused pool.
 local ADDON, OXP = ...
 
 local Pins = {}
@@ -19,16 +22,21 @@ local Engine, Places = OXP.Engine, OXP.Places
 local L = OXP.L
 local floor, min = math.floor, math.min
 
-local CIRCLE = "Interface\\AddOns\\" .. ADDON .. "\\Media\\Card\\filledcircle"
-local ACCEPT = "Interface\\GossipFrame\\AvailableQuestIcon"
-local TURNIN = "Interface\\GossipFrame\\ActiveQuestIcon"
-local SKULL = "Interface\\TargetingFrame\\UI-TargetingFrame-Skull"
-local BIG_SKULL = "Interface\\TargetingFrame\\UI-RaidTargetingIcon_8"
-local BAG = "Interface\\GossipFrame\\VendorGossipIcon"
-local COLORS = {
-    kill = { 0.93, 0.36, 0.33 }, loot = { 0.95, 0.76, 0.36 }, travel = { 0.35, 0.72, 1 },
-    town = { 0.35, 0.72, 1 }, accept = { 1, 0.82, 0 }, turnin = { 1, 0.82, 0 },
+local MAP = "Interface\\AddOns\\" .. ADDON .. "\\Media\\Map\\"
+local ICON = {
+    disc = MAP .. "step_disc", ring = MAP .. "step_ring", glow = MAP .. "step_glow",
+    accept = MAP .. "accept", turnin = MAP .. "turnin", turninGrey = MAP .. "turnin_grey",
+    kill = MAP .. "kill", loot = MAP .. "loot", chest = MAP .. "chest", object = MAP .. "object",
+    talk = MAP .. "talk", boss = MAP .. "boss",
 }
+Pins.ICON = ICON
+-- ring colours of the numbered step badges, by what the step is
+local COLORS = {
+    kill = { 1, 0.42, 0.38 }, loot = { 1, 0.78, 0.36 }, travel = { 0.42, 0.76, 1 },
+    town = { 0.42, 0.76, 1 }, accept = { 1, 0.82, 0.2 }, turnin = { 1, 0.82, 0.2 },
+}
+local HEX = { kill = "FFFF7A6E", loot = "FFFFC861", travel = "FF6CC2FF", town = "FF6CC2FF",
+              accept = "FFFFD23A", turnin = "FFFFD23A", grey = "FF9EA3AD", green = "FF3DBB7A" }
 local STEPS_AHEAD = 6
 local MAX_MOBS = 160
 local FEW = 3 -- a mob with this many spawns or fewer gets its own big pin
@@ -47,6 +55,8 @@ local function OnEnter(self)
     for i, line in ipairs(self.tip) do
         if i == 1 then
             GameTooltip:SetText(line, 1, 1, 1, 1, true)
+        elseif type(line) == "table" then
+            GameTooltip:AddDoubleLine(line[1], line[2], 0.85, 0.85, 0.85, 1, 1, 1)
         else
             GameTooltip:AddLine(line, 0.8, 0.8, 0.8, true)
         end
@@ -56,45 +66,107 @@ end
 
 local function OnLeave() GameTooltip:Hide() end
 
+-- One pin's look: a glow (the step you're on, pulsing), a badge (disc and
+-- coloured ring with the step number on it) or a single icon, a small step
+-- number tag on the icon's corner, and a label under it.
+local function Build(f, mini)
+    f.glow = f:CreateTexture(nil, "BACKGROUND")
+    f.glow:SetTexture(ICON.glow)
+    f.glow:SetPoint("CENTER")
+    f.disc = f:CreateTexture(nil, "ARTWORK")
+    f.disc:SetTexture(ICON.disc)
+    f.disc:SetAllPoints()
+    f.ring = f:CreateTexture(nil, "ARTWORK", nil, 1)
+    f.ring:SetTexture(ICON.ring)
+    f.ring:SetAllPoints()
+    f.tex = f:CreateTexture(nil, "ARTWORK", nil, 2)
+    f.tex:SetAllPoints()
+    f.num = f:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+    f.num:SetPoint("CENTER", 0, 0)
+    f.num:SetShadowColor(0, 0, 0, 1)
+    f.num:SetShadowOffset(1, -1)
+    if not mini then
+        f.tag = f:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+        f.tag:SetPoint("CENTER", f, "BOTTOMRIGHT", -1, 2)
+        f.tag:SetShadowColor(0, 0, 0, 1)
+        f.tag:SetShadowOffset(1, -1)
+        f.label = f:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+        f.label:SetPoint("TOP", f, "BOTTOM", 0, -1)
+        f.label:SetShadowColor(0, 0, 0, 1)
+        f.label:SetShadowOffset(1, -1)
+    end
+    if f.CreateAnimationGroup then
+        local ag = f.glow:CreateAnimationGroup()
+        ag:SetLooping("BOUNCE")
+        local a = ag:CreateAnimation("Alpha")
+        if a.SetFromAlpha then a:SetFromAlpha(0.35) a:SetToAlpha(0.95) end
+        if a.SetDuration then a:SetDuration(0.9) end
+        if a.SetSmoothing then a:SetSmoothing("IN_OUT") end
+        f.pulse = ag
+    end
+end
+
 local function NewPin()
     local p = CreateFrame("Frame", nil, UIParent)
-    p.tex = p:CreateTexture(nil, "OVERLAY")
-    p.tex:SetAllPoints()
-    p.num = p:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
-    p.num:SetPoint("CENTER", 0, 0)
-    p.label = p:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
-    p.label:SetPoint("TOP", p, "BOTTOM", 0, -1)
+    Build(p)
     p:EnableMouse(true)
     p:SetScript("OnEnter", OnEnter)
     p:SetScript("OnLeave", OnLeave)
     p.mini = CreateFrame("Frame", nil, UIParent)
-    p.mini.tex = p.mini:CreateTexture(nil, "OVERLAY")
-    p.mini.tex:SetAllPoints()
+    Build(p.mini, true)
     p.mini:EnableMouse(true)
-    p.mini:SetScript("OnEnter", function(self) OnEnter(p) end)
+    p.mini:SetScript("OnEnter", function() OnEnter(p) end)
     p.mini:SetScript("OnLeave", OnLeave)
     return p
 end
 
---- A pin from the pool, set up: texture (or nil for a text label), size,
---- colour {r, g, b, a}, number text, label under it, tooltip lines.
-local function Take(texture, size, color, num, label, tip)
+local function Style(f, o, size)
+    f:SetSize(size, size)
+    local badge = o.ring ~= nil
+    f.disc:SetShown(badge)
+    f.ring:SetShown(badge)
+    if badge then f.ring:SetVertexColor(o.ring[1], o.ring[2], o.ring[3], 1) end
+    f.tex:SetShown(o.icon ~= nil)
+    f.icon = o.icon
+    if o.icon then
+        f.tex:SetTexture(o.icon)
+        f.tex:SetVertexColor(1, 1, 1, o.alpha or 1)
+    end
+    local font, flags = OXP.Fonts.Path(), "OUTLINE"
+    local n = o.num and tostring(o.num) or ""
+    OXP.Fonts.Apply(f.num, font, math.max(7, floor(size * (#n >= 3 and 0.42 or 0.52))), flags)
+    f.num:SetText(n)
+    f.glow:SetSize(size * 1.9, size * 1.9)
+    f.glow:SetShown(o.glow == true)
+    if o.glow then
+        local c = o.ring or { 1, 0.82, 0.2 }
+        f.glow:SetVertexColor(c[1], c[2], c[3], 0.9)
+        if f.pulse and not f.pulse:IsPlaying() then f.pulse:Play() end
+    elseif f.pulse and f.pulse:IsPlaying() then
+        f.pulse:Stop()
+    end
+    f:SetAlpha(o.alpha or 1)
+end
+
+--- A pin from the pool, set up from `o`: { icon = texture, ring = {r, g, b}
+--- (a numbered badge), num, tag (small number on the icon's corner), label
+--- (under it), size, glow, alpha, tip = {lines} }.
+local function Take(o)
     used = used + 1
     local p = pool[used]
     if not p then
         p = NewPin()
         pool[used] = p
     end
-    p:SetSize(size, size)
-    p.tex:SetTexture(texture)
-    p.tex:SetShown(texture ~= nil)
-    p.tex:SetVertexColor(color[1], color[2], color[3], color[4] or 1)
-    p.num:SetText(num or "")
-    p.label:SetText(label or "")
-    p.mini:SetSize(size * 0.75, size * 0.75)
-    p.mini.tex:SetTexture(texture)
-    p.mini.tex:SetVertexColor(color[1], color[2], color[3], color[4] or 1)
-    p.tip = tip
+    local size = o.size or 16
+    Style(p, o, size)
+    Style(p.mini, o, size * 0.8)
+    local font = OXP.Fonts.Path()
+    OXP.Fonts.Apply(p.tag, font, 9, "OUTLINE")
+    p.tag:SetText(o.tag and tostring(o.tag) or "")
+    OXP.Fonts.Apply(p.label, font, 10, "OUTLINE")
+    p.label:SetText(o.label or "")
+    p.tip = o.tip
     return p
 end
 
@@ -109,6 +181,11 @@ end
 function Pins.Clear()
     HBDPins:RemoveAllWorldMapIcons(Pins)
     HBDPins:RemoveAllMinimapIcons(Pins)
+    for i = 1, used do
+        local p = pool[i]
+        if p.pulse then p.pulse:Stop() end
+        if p.mini.pulse then p.mini.pulse:Stop() end
+    end
     used = 0
 end
 
@@ -141,17 +218,24 @@ function Pins.Steps()
     return out
 end
 
-local function StepTip(step, pos)
+local WHAT = { accept = "Pick up", turnin = "Turn in", kill = "Kill", loot = "Collect", travel = "Go to", town = "In town" }
+
+local function C(hex, text) return "|c" .. hex .. text .. "|r" end
+
+local function StepTip(step, pos, kind)
     local tip = {}
     local Card = OXP.Card
+    local head = C(HEX[kind] or HEX.travel, ("%s %d"):format(L("Step"), pos)) .. C(HEX.grey, "  " .. L(WHAT[kind] or "Go to"))
     if Card and Card.StepContent then
         local title, lines = Card.StepContent(step)
-        tip[1] = ("%s %d: %s"):format(L("Step"), pos, Strip(title))
+        tip[1] = Strip(title)
+        tip[2] = head
         for _, line in ipairs(lines) do
-            tip[#tip + 1] = (line.done and "|cFF3DBB7A" .. L("Done") .. ":|r " or "- ") .. Strip(line.text)
+            tip[#tip + 1] = line.done and "|TInterface\\RaidFrame\\ReadyCheck-Ready:12|t " .. C(HEX.green, Strip(line.text)) or ("- " .. Strip(line.text))
         end
     else
-        tip[1] = ("%s %d: %s"):format(L("Step"), pos, OXP.Target.StepTitle(step) or "")
+        tip[1] = OXP.Target.StepTitle(step) or ""
+        tip[2] = head
     end
     return tip
 end
@@ -159,6 +243,14 @@ end
 local function StepKind(step)
     local Card = OXP.Card
     return Card and Card.StepKind and Card.StepKind(step) or "travel"
+end
+
+-- a turn-in step whose quests aren't all ready yet
+local function NotReady(step)
+    for _, g in ipairs(step.goals) do
+        if g[1] == "turnin" and g.quest and not OXP.Quests.IsComplete(g.quest) then return true end
+    end
+    return false
 end
 
 local function AddSteps()
@@ -169,14 +261,16 @@ local function AddSteps()
         if spot then
             local kind = StepKind(step)
             local now = i == 1 or pos == current
-            local tip = StepTip(step, pos)
+            local tip = StepTip(step, pos, kind)
             local p
             if kind == "accept" or kind == "turnin" then
-                p = Take(kind == "accept" and ACCEPT or TURNIN, now and 22 or 17, { 1, 1, 1, now and 1 or 0.85 },
-                    nil, "#" .. pos, tip)
+                local icon = kind == "accept" and ICON.accept or (NotReady(step) and ICON.turninGrey or ICON.turnin)
+                p = Take({ icon = icon, size = now and 26 or 20, tag = pos, glow = now,
+                           alpha = now and 1 or 0.92, tip = tip })
             else
                 local c = COLORS[kind] or COLORS.travel
-                p = Take(CIRCLE, now and 22 or 17, { c[1], c[2], c[3], now and 1 or 0.8 }, tostring(pos), nil, tip)
+                p = Take({ ring = c, num = pos, size = now and 26 or 20, glow = now,
+                           alpha = now and 1 or 0.92, tip = tip })
             end
             Place(p, spot.map, spot.x, spot.y, 3, now and "edge" or true) -- 3: zone and continent maps
         end
@@ -196,7 +290,7 @@ local function AddAreas()
             local tip = { ("%s - %s %d"):format(what, L("step"), pos),
                           OXP.Target.StepTitle(step) or "",
                           L("The blue area is where the mobs for this step are. Inside it the arrow says \"In the area\".") }
-            local p = Take(nil, 12, { 1, 1, 1 }, nil, "|cFF8EC8FF" .. what .. " (#" .. pos .. ")|r", tip)
+            local p = Take({ size = 2, label = "|cFF8EC8FF" .. what .. " (#" .. pos .. ")|r", tip = tip })
             Place(p, a.map, cx, cy, 0)
         end
     end
@@ -222,21 +316,29 @@ local function AddMobs()
                     if not seen[key] then
                         seen[key] = true
                         local few = (per[src] or 0) <= FEW and src.kind == "NPC"
+                        local o = OXP.Quests.GetObjective(g.quest, g.obj)
                         local tip = { src.name or "?" }
-                        if src.item then
-                            tip[2] = ("%s %s"):format(src.kind == "NPC" and L("Drops") or L("Has"), src.item)
-                        elseif okind == "kill" then
-                            tip[2] = L("Kill it")
-                        end
-                        tip[#tip + 1] = ("%s - %s %d"):format(quest, L("step"), pos)
-                        local p
-                        if few then
-                            p = Take(BIG_SKULL, 16, { 1, 1, 1 }, nil, src.name, tip)
-                        elseif src.kind == "NPC" and not src.item then
-                            p = Take(SKULL, 11, { 1, 0.55, 0.5, 0.9 }, nil, nil, tip)
+                        local icon
+                        if src.kind == "Object" then
+                            icon = src.item and ICON.chest or ICON.object
+                            tip[2] = src.item and C(HEX.loot, L("Has") .. " " .. src.item) or C(HEX.loot, L("Use it"))
+                        elseif src.item then
+                            icon = ICON.loot
+                            tip[2] = C(HEX.loot, L("Drops") .. " " .. src.item)
+                        elseif okind == "talk" then
+                            icon = ICON.talk
+                            tip[2] = C(HEX.travel, L("Talk to them"))
                         else
-                            p = Take(BAG, 11, { 1, 0.85, 0.45, 0.9 }, nil, nil, tip)
+                            icon = ICON.kill
+                            tip[2] = C(HEX.kill, L("Kill it"))
                         end
+                        if few then icon = ICON.boss end
+                        local line = quest
+                        if o and o.need and o.need > 0 then line = { quest, (o.have or 0) .. "/" .. o.need } end
+                        tip[3] = line
+                        tip[4] = C(HEX.grey, ("%s %d"):format(L("Step"), pos))
+                        local p = Take({ icon = icon, size = few and 20 or 13, label = few and src.name or nil,
+                                         alpha = few and 1 or 0.95, tip = tip })
                         if Place(p, map, x, y, 0, few and true or nil) then
                             count = count + 1
                         else
@@ -265,7 +367,8 @@ function Pins.Used()
     local out = {}
     for i = 1, used do
         local p = pool[i]
-        out[#out + 1] = { tip = p.tip, num = p.num:GetText(), label = p.label:GetText(), size = p:GetWidth() }
+        out[#out + 1] = { tip = p.tip, num = p.num:GetText(), tag = p.tag:GetText(), label = p.label:GetText(),
+                          size = p:GetWidth(), icon = p.icon }
     end
     return out
 end
