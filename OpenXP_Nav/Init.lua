@@ -5,4 +5,6 @@ NAV.packed = NAV.packed or {}                 -- [uiMap] = packed zone graph (Gr
 NAV.packedInstance = NAV.packedInstance or {} -- [instance map id] = packed dungeon graph
 NAV.paths = NAV.paths or {}                   -- ["map:x,y>map:x,y"] = {x, y, z, indoor, ...}
 NAV.spots = NAV.spots or {}                   -- ["map:x,y"] = {z, indoor}
+NAV.targets = NAV.targets or {}               -- ["questId:objective"] = { {map, x, y, z, indoor, id, kind}, ... }
+NAV.graveyards = NAV.graveyards or {}         -- ["map:x,y"] = {z, indoor}: walks from it start "map:x,y>"
 OpenXP_Nav = NAV                                  -- OpenXP finds it here after LoadAddOn("OpenXP_Nav")

@@ -237,7 +237,13 @@ local function Simplify(pts, eps)
     return out
 end
 
-local function Tidy(pts, thickness)
+-- A spike is a turn back on itself over a short way. The walks SoupEngine
+-- bakes now keep real switchbacks and doorways (sharp turns with legs of 10
+-- yards and more) and stay ~3 yards off walls, so when the scale is known
+-- (pixels per yard) only a turn back shorter than SPIKE_YARDS is a spike.
+local SPIKE_YARDS = 3
+
+local function Tidy(pts, thickness, perYard)
     local out = {}
     for _, p in ipairs(pts) do
         local last = out[#out]
@@ -246,6 +252,7 @@ local function Tidy(pts, thickness)
         end
     end
     local spike = thickness * 4
+    if perYard and perYard > 0 then spike = min(spike, SPIKE_YARDS * perYard) end
     local changed = true
     while changed and #out >= 3 do
         changed = false
@@ -267,10 +274,10 @@ Draw.Tidy = Tidy
 
 -- One clean line with rounded corners, round joints, a small chevron now
 -- and then for the direction, and a dot where it ends.
-local function RouteLeg(c, pts, thickness, clip)
+local function RouteLeg(c, pts, thickness, clip, perYard)
     if #pts < 2 or not RouteOn() then return end
     local color = RouteColor()
-    pts = SmoothOpen(Tidy(pts, thickness), 2)
+    pts = SmoothOpen(Tidy(pts, thickness, perYard), 2)
     -- a dark casing under the line keeps it readable on any ground
     for i = 1, #pts - 1 do
         local ax, ay, bx, by = ClipSegment(pts[i][1], pts[i][2], pts[i + 1][1], pts[i + 1][2], clip)
@@ -342,6 +349,11 @@ function Draw.Upcoming()
         local map = aim.map
         local x, y
         if map then x, y = Places.ToZone(aim.wx, aim.wy, map) end
+        -- the arrow is on a pinpointed mob or chest of this step: the line
+        -- goes there too (SoupEngine bakes walks from the spot to it)
+        local cur = OXP.Target.Current and OXP.Target.Current()
+        local pin = cur and cur.real == aim and cur.focus
+        if pin and pin.pin and pin.map and pin.x then map, x, y = pin.map, pin.x, pin.y end
         if x then
             out[1] = { map, x, y, aim.step and Areas.ForStep(aim.step) or nil }
             -- an "as you go" step behind you: the current step still follows
@@ -451,6 +463,14 @@ function Draw.WorldMap()
     local scale = wm.GetCanvasScale and wm:GetCanvasScale() or 1
     local function P(x, y) return x / 100 * w, y / 100 * h end
     local stops = Draw.Upcoming()
+    -- pixels per yard on this map (for the line's tidy)
+    local perYard
+    local ax, ay = Places.ToWorld(map, 0, 50)
+    local bx, by = Places.ToWorld(map, 100, 50)
+    if ax and bx then
+        local yards = Places.Distance(ax, ay, bx, by)
+        if yards > 0 then perYard = w / yards end
+    end
 
     for _, s in ipairs(stops) do
         if s[4] and s[4].map == map then
@@ -483,7 +503,7 @@ function Draw.WorldMap()
         if px then
             local pts = {}
             for _, p in ipairs(RoutePoints(map, px, py, stops, level)) do pts[#pts + 1] = { P(p[1], p[2]) } end
-            RouteLeg(wmc, pts, 2 / scale)
+            RouteLeg(wmc, pts, 2 / scale, nil, perYard)
         end
     end
 end
@@ -580,7 +600,7 @@ local function DrawMinimap()
         local x, y = P(p[1], p[2])
         if x then route[#route + 1] = { x, y } end
     end
-    RouteLeg(mmc, route, 1.5, clip)
+    RouteLeg(mmc, route, 1.5, clip, ppy)
 end
 
 function Draw.Minimap()

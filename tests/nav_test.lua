@@ -462,6 +462,99 @@ if true then
     t.eq(#game.errors, 0, "no Lua errors: " .. table.concat(game.errors, " | "))
 end
 
+print("-- OpenXP_Nav's targets: SoupEngine's own pinpoints, with their floor and a walk to them")
+do
+    local game, OXP = newGame({ level = 23, map = 1437, x = 15.26, y = 39.83 })
+    local g = addGuide(OXP, {
+        { { "goto", zone = "Wetlands", x = 15.26, y = 39.83 },
+          { "text", text = "Kill |cOXP_ENEMY_Bluegill Murloc|r" },
+          { "complete", quest = 279, obj = 1 }, { "complete", quest = 279, obj = 2 } },
+    }, "Targets test")
+    game:Accept(279, 2)
+    OXP.Engine.Load(g.key)
+    local step = OXP.Engine.GetSteps()[1]
+    local gob
+    for _, src in ipairs(OXP.QuestDB.ObjectiveSources(279, 2) or {}) do
+        if src.name == "Gobbler" then gob = src.id end
+    end
+    t.ok(gob, "Gobbler is in the quest's sources")
+    -- an older OpenXP_Nav (no targets): Questie's spawns
+    OXP.WalkPaths.Use({ paths = {}, spots = {} })
+    local pts = OXP.Areas.Pinpoints(step)
+    t.ok(pts and pts[1] and not pts[1].baked and pts[1].name == "Gobbler", "no targets baked: Questie's spawns")
+    -- SoupEngine's target for 279:2, one floor up from the spot, with a walk to it
+    OXP.WalkPaths.Use({
+        paths = { ["1437:15.26,39.83>1437:20.00,39.83"] = { 15.26, 39.83, 10, 0, 17.5, 42, 12, 0, 20, 39.83, 20, 0 } },
+        spots = { ["1437:15.26,39.83"] = { 10, 0 } },
+        targets = { ["279:2"] = { { 1437, 20.00, 39.83, 20, 0, gob, "npc" } } },
+        graveyards = {},
+    })
+    pts = OXP.Areas.Pinpoints(step)
+    t.ok(pts and #pts == 1 and pts[1].baked and pts[1][1] == 20 and pts[1].kind == "NPC" and pts[1].name == "Gobbler",
+        "the baked target instead of Questie's spawns, with its name (" .. tostring(pts and #pts) .. ")")
+    game.now = game.now + 1
+    local aim = OXP.Target.Update()
+    t.ok(aim and aim.focus and aim.focus.x == 20, "the arrow goes to the baked target")
+    t.ok(aim and aim.walkPath, "along SoupEngine's walk from the spot to it")
+    t.ok(aim and aim.focus and aim.focus.floorNote == "upstairs" and aim.title:find("(upstairs)", 1, true),
+        "10 yards above the spot's floor: upstairs (" .. tostring(aim and aim.title) .. ")")
+    local stops = OXP.MapDraw.Upcoming()
+    t.ok(stops[1] and stops[1][2] == 20 and stops[1][3] == 39.83, "the route line goes to the target too")
+    local line = OXP.MapDraw.RoutePoints(1437, 15.26, 39.83, { stops[1] }, 23)
+    t.ok(#line >= 3 and line[#line][1] == 20, "along the baked walk (" .. #line .. " points)")
+    t.eq(OXP.Areas.FloorNote({ baked = true, z = 0, indoor = false }, { map = 1437, x = 15.26, y = 39.83 }), "in a cave",
+        "well below the spot: in a cave")
+    t.eq(OXP.Areas.FloorNote({ baked = true, z = 10, indoor = true }, { map = 1437, x = 15.26, y = 39.83 }), "inside",
+        "indoors on the spot's level: inside")
+    OXP.WalkPaths.Use(nil)
+    t.eq(#game.errors, 0, "no Lua errors: " .. table.concat(game.errors, " | "))
+end
+
+print("-- OpenXP_Nav's graveyards: after a death the walk from the spirit healer")
+do
+    local game, OXP = newGame({ level = 22, map = 1453, x = 50, y = 31.5 })
+    local WP = OXP.WalkPaths
+    local g = addGuide(OXP, {
+        { { "goto", zone = "Stormwind City", x = 60, y = 50 }, { "accept", quest = 500 } },
+    }, "Graveyard test")
+    OXP.Engine.Load(g.key)
+    -- the guide's walk heads east along y = 30, the graveyard's west along y = 33
+    WP.Use({ paths = {
+        ["1453:20.00,50.00>1453:60.00,50.00"] = { 20, 50, 0, 0, 20, 30, 0, 0, 60, 30, 0, 0, 60, 50, 0, 0 },
+        ["1453:90.00,33.00>1453:60.00,50.00"] = { 90, 33, 0, 0, 40, 33, 0, 0, 40, 50, 0, 0, 60, 50, 0, 0 },
+    }, spots = {}, graveyards = { ["1453:90.00,33.00"] = { 0, 0 } } })
+    local function aimX()
+        game.now = game.now + 1
+        local a = OXP.Target.Update()
+        return (OXP.Places.ToZone(a.wx, a.wy, 1453))
+    end
+    t.ok(aimX() > 50, "alive: the guide's own walk")
+    local saved = _G.UnitIsDeadOrGhost
+    _G.UnitIsDeadOrGhost = function() return true end
+    t.ok(aimX() < 50, "a ghost: the walk from the graveyard")
+    _G.UnitIsDeadOrGhost = saved
+    t.ok(aimX() < 50, "just resurrected: still the graveyard's walk")
+    game.now = game.now + 130
+    t.ok(aimX() > 50, "a while later: the guide's walk again")
+    WP.Use(nil)
+    t.eq(#game.errors, 0, "no Lua errors: " .. table.concat(game.errors, " | "))
+end
+
+print("-- the route line's tidy keeps switchbacks SoupEngine bakes")
+do
+    local _, OXP = newGame({ level = 22 })
+    local Tidy = OXP.MapDraw.Tidy
+    -- 1 pixel a yard: an 11-yard switchback (up, back, up) and a 2-yard spike
+    local pts = Tidy({ { 0, 0 }, { 0, 40 }, { 4, 30 }, { 4, 70 }, { 6, 70.3 }, { 4, 70.6 }, { 4, 100 } }, 4, 1)
+    local corners, spike = 0, false
+    for _, p in ipairs(pts) do
+        if (p[1] == 0 and p[2] == 40) or (p[1] == 4 and p[2] == 30) then corners = corners + 1 end
+        if p[1] == 6 then spike = true end
+    end
+    t.eq(corners, 2, "the switchback's corners stay")
+    t.ok(not spike, "a 2-yard spike still goes")
+end
+
 ------------------------------------------------------------------------
 print("-- baked walks from OpenXP_Nav: the arrow follows their corners")
 do

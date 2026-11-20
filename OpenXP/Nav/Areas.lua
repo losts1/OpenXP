@@ -229,9 +229,40 @@ end
 ------------------------------------------------------------------------
 
 local FEW = 3 -- spawns: a mob or object with this many or fewer gets pinpointed
+local KIND = { npc = "NPC", object = "Object" }
+
+-- The name (and the item it drops, for loot) of a target SoupEngine baked,
+-- from the objective's own sources, else the database.
+local function TargetName(quest, obj, kind, id)
+    for _, src in ipairs(OXP.QuestDB.ObjectiveSources(quest, obj) or {}) do
+        if src.kind == kind and src.id == id then return src.name, src.item end
+    end
+    local o = OXP.QuestDB.Get(kind, id)
+    return o and o.name
+end
+
+-- SoupEngine's own pinpoints for an objective (OpenXP_Nav's targets, on the
+-- floor they're really on), on the spot's map: added to `out`. False when
+-- OpenXP_Nav has none for it (then Questie's spawns are used).
+local function BakedTargets(g, spot, out, seen)
+    local list = OXP.WalkPaths and OXP.WalkPaths.Targets(g.quest, g.obj)
+    if not list then return false end
+    for _, e in ipairs(list) do
+        local map, x, y, z, indoor, id, kind = e[1], e[2], e[3], e[4], e[5], e[6], KIND[e[7]] or e[7]
+        local key = tostring(id) .. ":" .. floor(x * 10) .. ":" .. floor(y * 10)
+        if map == spot.map and not seen[key] then
+            seen[key] = true
+            local name, item = TargetName(g.quest, g.obj, kind, id)
+            out[#out + 1] = { x, y, name = name, id = id, kind = kind, item = item, z = z, indoor = indoor == 1, baked = true }
+        end
+    end
+    return true
+end
 
 --- What a step still needs that has only a few spawns near its spot (a named
 --- mob, a chest, a single object): { {x, y, name = s, id = n, kind = "NPC"|"Object"}, ... }, map; or nil.
+--- SoupEngine's baked targets (OpenXP_Nav) come first and also carry z (yards)
+--- and indoor; without them, Questie's spawns.
 function Areas.Pinpoints(step)
     local spot = Areas.StepSpot(step)
     if not spot then return nil end
@@ -239,7 +270,8 @@ function Areas.Pinpoints(step)
     local zoneArea = d and d.area
     local out, seen = {}, {}
     for _, g in ipairs(step.goals) do
-        if g[1] == "complete" and g.quest and g.obj and OXP.Goals.State(g, step.marks) == "todo" then
+        if g[1] == "complete" and g.quest and g.obj and OXP.Goals.State(g, step.marks) == "todo"
+            and not BakedTargets(g, spot, out, seen) then
             local sp = OXP.QuestDB.ObjectiveSpawns(g.quest, g.obj, spot.map, zoneArea) or {}
             local per, near = {}, {}
             for _, p in ipairs(sp) do
@@ -262,6 +294,20 @@ function Areas.Pinpoints(step)
 end
 
 local pin = {}
+
+local UP = 6 -- yards: a pinpoint this far above or below the spot's floor is on another floor
+
+--- Where a baked pinpoint is compared with its step's spot: "upstairs" (well
+--- above its floor), "in a cave" (well below it), "inside" (indoors on about
+--- the same level while the spot is outdoors) or nil.
+function Areas.FloorNote(p, spot)
+    if not (p and p.baked and p.z) then return nil end
+    local sz, sIndoor
+    if spot and OXP.WalkPaths then sz, sIndoor = OXP.WalkPaths.Floor(spot.map, spot.x, spot.y) end
+    if sz and p.z >= sz + UP then return OXP.L("upstairs") end
+    if sz and p.z <= sz - UP then return OXP.L("in a cave") end
+    if p.indoor and not sIndoor then return OXP.L("inside") end
+end
 
 --- For the SoupEngine arrow: what to show for a kill/loot step once you're
 --- there. A pinpointed mob or chest ({wx, wy, instance, map, x, y, title,
@@ -305,6 +351,10 @@ function Areas.Focus(step, title)
                 local name = p.name
                 local says = title and name and OXP.Text.Strip(title):find(name, 1, true)
                 pin.title, pin.name, pin.pin, pin.kind = (says or not name) and title or name, name, true, p.kind
+                -- SoupEngine knows its floor: say when it's upstairs or in a cave
+                local note = Areas.FloorNote(p, spot)
+                if note and pin.title then pin.title = pin.title .. " (" .. note .. ")" end
+                pin.floorNote = note
                 return pin
             end
         end

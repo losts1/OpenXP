@@ -10,8 +10,10 @@ What is in it
 -------------
 - Init.lua: makes the empty tables and sets the global OpenXP_Nav.
 - Paths-Alliance.lua, Paths-Horde.lua: each guide walk as a list of corners
-  (map x %, map y %, height in yards, 1 if indoors), and the floor height of each
-  guide spot. Plain numbers. Each file only runs for its own faction.
+  (map x %, map y %, height in yards, 1 if indoors), the floor height of each
+  guide spot, where the named mobs and single objects some quests need stand
+  (with their floor), and the graveyards with walks from them back to the
+  guide. Plain numbers. Each file only runs for its own faction.
 - Graphs/<zone>.lua: each zone's walking network (points and the links between
   them), packed into one text string per zone to keep the download small. These
   strings are data, not code: nothing ever runs them.

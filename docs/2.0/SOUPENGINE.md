@@ -99,24 +99,44 @@ OpenXP, as its own add-on folder players can turn off.
 |---|---|---|
 | `OpenXP_Nav.toc` | `## LoadOnDemand: 1`, `## Dependencies: OpenXP` | tiny |
 | `README.txt` | what's in it, for players and add-on site reviewers | tiny |
-| `Init.lua` | tables `paths`, `spots`, `packed`; sets the global `OpenXP_Nav` | tiny |
-| `Paths-Alliance.lua`, `Paths-Horde.lua` | baked walking paths and guide-spot floors; each only runs for its own faction | ~1.3 MB each |
+| `Init.lua` | tables `paths`, `spots`, `targets`, `graveyards`, `packed`; sets the global `OpenXP_Nav` | tiny |
+| `Paths-Alliance.lua`, `Paths-Horde.lua` | baked walks, guide-spot floors, pinpointed targets and graveyards; each only runs for its own faction | ~2.5 MB each |
 | `Unpack.lua` | SoupNav's readable graph unpacker (sets `NAV.Unpack`) | tiny |
-| `Graphs/<zone>.lua` (48 zones) | SoupNav's packed walking network per zone | ~9.4 MB |
+| `Graphs/<zone>.lua` (48 zones) | SoupNav's packed walking network per zone | ~10.5 MB |
 
-About 12 MB unpacked; the release zip with both folders was 7.6 MB.
+About 16 MB unpacked (export of 2026-11-20, from SoupNav's navmeshes and the
+zone graphs rebuilt on 2026-11-19).
 
 Formats:
 
 - `OpenXP_Nav.paths["map:x,y>map:x,y"] = { x1, y1, z1, i1, x2, ... }`: one
   walking leg inside one zone, as corners in map % with height in yards and
-  1 = indoors. Keys use two decimals. Most legs (2982 of 3607 for Alliance)
+  1 = indoors. Keys use two decimals. Most legs
   end exactly on a guide `goto` (`zone`, `x`, `y`); the rest end at other
   points of a trip.
 - `OpenXP_Nav.spots["map:x,y"] = { z, indoor }`: the floor of a guide spot
   (addons can't read height on Forever, `UnitPosition`'s z is always 0).
-  Every Alliance `goto` spot has one. `WalkPaths.Floor(map, x, y)` reads it;
-  nothing uses it yet.
+  Every `goto` spot has one. `WalkPaths.Floor(map, x, y)` reads it.
+- `OpenXP_Nav.targets["questId:objectiveIndex"] = { {map, x, y, z, indoor, id, kind}, ... }`
+  (new 2026-11-20): named mobs, rares and single objects a quest objective
+  needs, on the floor they're really on. `map` is the step's uiMap, `x`, `y`
+  map % (two decimals), `z` the floor in yards, `indoor` 1/0, `id` the NPC or
+  object id, `kind` `"npc"` or `"object"`. Same rule as `Areas.Pinpoints`
+  (3 or fewer spawns in the zone, within 14 map % of the step's spot). Walks
+  to them: `paths["<step spot>><target>"]` (none when the target is within 3
+  yards of the spot). 325 for Alliance.
+- `OpenXP_Nav.graveyards["map:x,y"] = { z, indoor }` (new 2026-11-20): spirit
+  healers. Walks from the two nearest graveyards of each spot's zone are
+  `paths["<graveyard>><spot>"]`. 79 for Alliance.
+- Walks across zone borders keep the same key, corners in the end spot's
+  map % (below 0 or above 100 while still in the zone before); since
+  2026-11-20 they're continuous at the border (no jump at gates). Walks are
+  smoother too: fewer corners, about 3 yards off walls, real switchbacks and
+  doorway turns kept.
+
+Counts in the 2026-11-20 export: Alliance 7254 walks, 2076 spot floors;
+Horde about the same size. Older exports without `targets` or `graveyards`
+still work: OpenXP falls back to Questie's spawns and the guide's walks.
 
 It holds only points derived from SoupNav's walking map and SoupNav's packed
 graphs: no terrain, meshes, models or anything else copied from the game.
@@ -165,6 +185,20 @@ turns this on (`false` gives back the old arrow, trips and terrain ways).
 - **Route line**: tidied before it's drawn (dropped spikes where a walk steps
   out and straight back, wiggles too small to matter), joined to the walk
   where it passes nearest you without skipping corners, on a dark casing.
+  Since 2026-11-20 a spike is a turn back shorter than 3 yards on the ground
+  (scaled to the map or minimap), so the switchbacks and doorway turns the
+  smoother walks keep (sharp turns with legs of 10 yards and more) stay.
+- **Pinpoints from OpenXP_Nav** (2026-11-20): `Areas.Pinpoints` uses
+  SoupEngine's `targets` for a goal's `quest:obj` when there are any, else
+  Questie's spawns as before. The arrow follows the baked walk from the
+  step's spot to the target, the route line goes there too, and the arrow
+  says "(upstairs)" (6+ yards above the spot's floor), "(in a cave)" (6+
+  yards below) or "(inside)" (indoors at about the spot's level while the
+  spot is outdoors).
+- **After a death** (2026-11-20): while you're a ghost and for 2 minutes
+  after you're back, walks starting at a key in `graveyards` come first;
+  otherwise the guide's own walks do (the graveyard walks are the fallback).
+  `/oxp nav` says which kind of walk the arrow has.
 - **Removed** while it's on: `/oxp path`, `/oxp wall`, and the "Plan trips to
   other zones" and "Route style" settings. New: `/oxp nav` says whether
   OpenXP_Nav loaded and what walk the arrow has to this step's spot.
@@ -176,30 +210,28 @@ zones (the arrow points straight until you're in the step's zone).
 
 ### Ideas for later (not approved, not built)
 
-- Walks between zones (SoupNav's meshes stop at zone edges).
-- Bake walks from graveyards to the guide spots.
-- Floors: tell the player a spot is in a cave or upstairs.
+- Floors for the guide's own spots (only pinpointed targets say "upstairs"
+  or "in a cave" so far).
 
 ## For SoupEngine / SoupNav (asked for by Matt, not OpenXP's to build)
 
 - The shape of the walks: wall hugging, detours and wiggles come from the
   corners SoupEngine bakes (and SoupNav's graph). OpenXP only tidies tiny
   spikes when it draws them.
-- Exact boss, rare and chest spots, and their floors (caves, upstairs):
-  OpenXP pinpoints them from quest spawn data; SoupEngine could bake better
-  ones into OpenXP_Nav next to `spots`.
-- Walks from graveyards, and across the zone borders the meshes don't cover.
+- Done 2026-11-20: exact boss, rare and chest spots with their floors
+  (`targets`), walks from graveyards, and continuous walks across zone borders.
 
 ## Known issues (SoupNav side, not fixed here)
 
 SoupNav is being fixed separately; these were open when this was written.
 
 
-- Zone meshes stop at zone edges, so ~10 border crossings sit off the mesh.
+- Zone meshes used to stop at zone edges; since the 2026-11-20 export the walks are continuous across borders.
 - Floors pick the ground above mines (Goldtooth, Fargodeep), because guide
   spots have no height.
 - Since SoupNav's latest `Unpack.lua` (it now sets `NAV.Unpack` itself),
   SoupEngine copies it as is (SoupEngine branch `openxp-nav-readme`).
-- The `build/OpenXP_Nav` checked here was made before SoupNav's latest
-  floors and links fixes: re-run `soup navexport` for both factions before
-  a release.
+- The 2026-11-20 export still has a few walks SoupNav can't finish (Zephras
+  Isle, Wetlands 36.6,52.3, Eastern Plaguelands 81.5,44.0, Blasted Lands
+  63.9,40.9) and no walk between Loch Modan / Redridge and the Wetlands;
+  see SoupEngine's `build/release-export*.log`.

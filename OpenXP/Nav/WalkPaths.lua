@@ -10,8 +10,13 @@
 -- OpenXP_Nav's data (see docs/2.0/SOUPENGINE.md):
 --   paths["map:x,y>map:x,y"] = { x1, y1, z1, indoor1, x2, ... }  one walk, map %
 --   spots["map:x,y"]         = { z, indoor }                     a guide spot's floor
---   packed[map]              = SoupNav's packed zone graph (not used yet)
--- Keys have two decimals, like the guide's own goto x and y.
+--   targets["quest:obj"]     = { {map, x, y, z, indoor, id, kind}, ... }  named mobs, chests
+--   graveyards["map:x,y"]    = { z, indoor }                     spirit healers
+--   packed[map]              = SoupNav's packed zone graph (Nav/WalkGraph.lua)
+-- Keys have two decimals, like the guide's own goto x and y. Walks to a
+-- target are keyed "<spot>><target>", walks from a graveyard
+-- "<graveyard>><spot>". targets and graveyards are newer: an older
+-- OpenXP_Nav without them still works.
 local _, OXP = ...
 
 local WP = {}
@@ -39,9 +44,9 @@ local passing = {}     -- ["map:x,y"] = { leg, ... } or false: walks through a s
 
 local function Index(data)
     byEnd, byMap, passing = {}, {}, {}
-    local legs = 0
+    local legs, gy = 0, type(data.graveyards) == "table" and data.graveyards or {}
     for key, flat in pairs(data.paths) do
-        local to = key:match(">(.+)$")
+        local from, to = key:match("^(.-)>(.+)$")
         local map = to and tonumber(to:match("^(%d+):"))
         if map and type(flat) == "table" and #flat >= 8 then
             local list = byEnd[to]
@@ -49,7 +54,7 @@ local function Index(data)
                 list = {}
                 byEnd[to] = list
             end
-            local leg = { map = map, key = key, flat = flat }
+            local leg = { map = map, key = key, flat = flat, graveyard = gy[from] ~= nil }
             list[#list + 1] = leg
             byMap[map] = byMap[map] or {}
             byMap[map][#byMap[map] + 1] = leg
@@ -86,6 +91,27 @@ function WP.Load()
 end
 
 function WP.IsLoaded() return nav ~= nil end
+
+--- SoupEngine's pinpoints for a quest objective: { {map, x, y, z, indoor, id,
+--- kind ("npc"|"object")}, ... }, or nil (none baked, or an older OpenXP_Nav).
+function WP.Targets(quest, obj)
+    local t = nav and type(nav.targets) == "table" and nav.targets[quest .. ":" .. obj]
+    if type(t) == "table" and #t > 0 then return t end
+end
+
+-- After a death (a ghost, or for a while after you're back) walks from a
+-- spirit healer come first.
+local AFTER_DEATH = 120 -- seconds after you're alive again
+local deadAt = -huge
+
+function WP.AfterDeath()
+    local now = GetTime and GetTime() or 0
+    if UnitIsDeadOrGhost and UnitIsDeadOrGhost("player") then
+        deadAt = now
+        return true
+    end
+    return now - deadAt <= AFTER_DEATH
+end
 
 --- A guide spot's floor from OpenXP_Nav: z (yards), indoor (true/false); nil if unknown.
 function WP.Floor(map, x, y)
@@ -166,7 +192,7 @@ local function LegsTo(map, x, y)
                     local flat = {}
                     for k = 1, bestSeg * 4 do flat[k] = leg.flat[k] end
                     flat[#flat + 1], flat[#flat + 2], flat[#flat + 3], flat[#flat + 4] = x, y, 0, 0
-                    found[#found + 1] = { map = map, key = leg.key .. "|" .. key, flat = flat, through = true }
+                    found[#found + 1] = { map = map, key = leg.key .. "|" .. key, flat = flat, through = true, graveyard = leg.graveyard }
                 end
             end
         end
@@ -212,10 +238,29 @@ end
 -- them, one worked out on SoupNav's graph from where you stand. Returns the
 -- leg, the index of the next corner ahead on it, the distance to the walk
 -- and the nearest point on it (world); nil when there's no walk at all.
+-- Of the walks to a spot, the ones that fit now: from a graveyard after a
+-- death, else the guide's own (the others are the fallback).
+local function Preferred(legs)
+    if not legs then return nil, nil end
+    local want = WP.AfterDeath()
+    local pick, any = {}, false
+    for _, leg in ipairs(legs) do
+        if leg.graveyard then any = true end
+        if (leg.graveyard or false) == want then pick[#pick + 1] = leg end
+    end
+    if not any and not want then return legs, nil end
+    return pick, legs
+end
+
 local function Ahead(target, px, py, inst)
     if not (target and target.map and target.x and target.y and px) then return nil end
     local key = SpotKey(target.map, target.x, target.y)
-    local best, bestSeg, bestD, bx, by = Nearest(LegsTo(target.map, target.x, target.y), px, py, inst)
+    local first, all = Preferred(LegsTo(target.map, target.x, target.y))
+    local best, bestSeg, bestD, bx, by = Nearest(first, px, py, inst)
+    if all and (not best or bestD > NEAR) then
+        local b2, s2, d2, x2, y2 = Nearest(all, px, py, inst)
+        if b2 and d2 < bestD then best, bestSeg, bestD, bx, by = b2, s2, d2, x2, y2 end
+    end
     if not best or bestD > NEAR then
         local gl = GraphLeg(target, key, px, py, inst)
         if gl then
@@ -354,7 +399,13 @@ function WP.Command()
         OXP.Print("OpenXP_Nav isn't loaded: no SoupEngine walks. Check it's enabled in the AddOns list, then restart the game.")
         return
     end
-    OXP.Print(("OpenXP_Nav loaded: %d SoupEngine walks."):format(WP.legs or 0))
+    local function Count(t)
+        local n = 0
+        for _ in pairs(type(t) == "table" and t or {}) do n = n + 1 end
+        return n
+    end
+    OXP.Print(("OpenXP_Nav loaded: %d SoupEngine walks, %d pinpointed targets, %d graveyards."):format(
+        WP.legs or 0, Count(nav.targets), Count(nav.graveyards)))
     local real = OXP.Target.Real and OXP.Target.Real()
     if not (real and real.x) then OXP.Print("No guide spot to walk to right now.") return end
     local px, py, inst = Places.Player()
@@ -364,7 +415,8 @@ function WP.Command()
         OXP.Print(("No walk to this step's spot (%s): nothing baked and no graph way from here."):format(key))
     else
         OXP.Print(("Walk to this step's spot (%s): %s; you're %d yards from it%s."):format(key,
-            best.graph and "worked out on SoupNav's zone graph" or "SoupEngine's baked walk", floor(d + 0.5),
+            best.graph and "worked out on SoupNav's zone graph"
+                or best.graveyard and "SoupEngine's walk from the graveyard" or "SoupEngine's baked walk", floor(d + 0.5),
             d > NEAR and " (the arrow leads you back onto it)" or ""))
     end
 end
